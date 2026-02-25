@@ -3,16 +3,37 @@ package usecase
 import (
 	"context"
 
+	"mdht/internal/modules/collab/domain"
 	"mdht/internal/modules/collab/dto"
 	collabin "mdht/internal/modules/collab/port/in"
-	"mdht/internal/modules/collab/service"
+	collabout "mdht/internal/modules/collab/port/out"
 )
 
-type Interactor struct {
-	svc *service.CollabService
+type servicePort interface {
+	RunDaemon(ctx context.Context) error
+	StartDaemon(ctx context.Context) error
+	StopDaemon(ctx context.Context) error
+	DaemonStatus(ctx context.Context) (struct {
+		Running    bool
+		PID        int
+		SocketPath string
+		Status     collabout.DaemonStatus
+	}, error)
+	WorkspaceInit(ctx context.Context, name string) (domain.Workspace, error)
+	WorkspaceShow(ctx context.Context) (domain.Workspace, string, []domain.Peer, error)
+	PeerAdd(ctx context.Context, addr string) (domain.Peer, error)
+	PeerRemove(ctx context.Context, peerID string) error
+	PeerList(ctx context.Context) ([]domain.Peer, error)
+	Status(ctx context.Context) (collabout.DaemonStatus, error)
+	ReconcileNow(ctx context.Context) (int, error)
+	ExportState(ctx context.Context) (string, error)
 }
 
-func NewInteractor(svc *service.CollabService) collabin.Usecase {
+type Interactor struct {
+	svc servicePort
+}
+
+func NewInteractor(svc servicePort) collabin.Usecase {
 	return &Interactor{svc: svc}
 }
 
