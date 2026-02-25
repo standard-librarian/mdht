@@ -7,10 +7,12 @@ import (
 	osexec "os/exec"
 	"strconv"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	collabdto "mdht/internal/modules/collab/dto"
 	"mdht/internal/modules/library/dto"
 	plugindto "mdht/internal/modules/plugin/dto"
 	readerdto "mdht/internal/modules/reader/dto"
@@ -39,6 +41,12 @@ type pluginPort interface {
 	Execute(ctx context.Context, input plugindto.ExecuteInput) (plugindto.ExecuteOutput, error)
 	Analyze(ctx context.Context, input plugindto.ExecuteInput) (plugindto.ExecuteOutput, error)
 	PrepareTTY(ctx context.Context, input plugindto.TTYPrepareInput) (plugindto.TTYPrepareOutput, error)
+}
+
+type collabPort interface {
+	Status(ctx context.Context) (collabdto.StatusOutput, error)
+	PeerList(ctx context.Context) ([]collabdto.PeerOutput, error)
+	ReconcileNow(ctx context.Context) (collabdto.ReconcileOutput, error)
 }
 
 type sourcesLoadedMsg struct {
@@ -91,12 +99,28 @@ type pluginTTYDoneMsg struct {
 	err error
 }
 
+type collabStatusMsg struct {
+	status collabdto.StatusOutput
+	err    error
+}
+
+type collabPeersMsg struct {
+	peers []collabdto.PeerOutput
+	err   error
+}
+
+type collabReconcileMsg struct {
+	applied int
+	err     error
+}
+
 type Model struct {
 	vaultPath string
 	library   libraryPort
 	session   sessionPort
 	reader    readerPort
 	plugin    pluginPort
+	collab    collabPort
 
 	sources       []dto.SourceOutput
 	selectedIndex int
@@ -109,6 +133,8 @@ type Model struct {
 	pluginNameForCommands string
 	pluginCommands        []plugindto.CommandInfo
 	pluginResult          plugindto.ExecuteOutput
+	collabStatus          collabdto.StatusOutput
+	collabPeers           []collabdto.PeerOutput
 
 	showPalette  bool
 	paletteInput string
@@ -118,13 +144,14 @@ type Model struct {
 	height int
 }
 
-func NewModel(vaultPath string, library libraryPort, session sessionPort, reader readerPort, plugin pluginPort) Model {
+func NewModel(vaultPath string, library libraryPort, session sessionPort, reader readerPort, plugin pluginPort, collab collabPort) Model {
 	return Model{
 		vaultPath:   vaultPath,
 		library:     library,
 		session:     session,
 		reader:      reader,
 		plugin:      plugin,
+		collab:      collab,
 		status:      "ready",
 		hasActive:   false,
 		showPalette: false,
@@ -132,7 +159,7 @@ func NewModel(vaultPath string, library libraryPort, session sessionPort, reader
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(m.loadSourcesCmd(), m.loadActiveCmd())
+	return tea.Batch(m.loadSourcesCmd(), m.loadActiveCmd(), m.loadCollabStatusCmd())
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -251,6 +278,28 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.status = "plugin tty completed"
 		return m, nil
+	case collabStatusMsg:
+		if msg.err != nil {
+			m.status = "collab status failed: " + msg.err.Error()
+			return m, nil
+		}
+		m.collabStatus = msg.status
+		return m, nil
+	case collabPeersMsg:
+		if msg.err != nil {
+			m.status = "collab peers failed: " + msg.err.Error()
+			return m, nil
+		}
+		m.collabPeers = msg.peers
+		m.status = fmt.Sprintf("collab peers loaded: %d", len(msg.peers))
+		return m, nil
+	case collabReconcileMsg:
+		if msg.err != nil {
+			m.status = "collab reconcile failed: " + msg.err.Error()
+			return m, nil
+		}
+		m.status = fmt.Sprintf("collab reconciled ops=%d", msg.applied)
+		return m, m.loadCollabStatusCmd()
 	case tea.KeyMsg:
 		if m.showPalette {
 			return m.handlePaletteInput(msg)
@@ -280,7 +329,15 @@ func (m Model) View() string {
 		palette = "\n" + theme.Pane.BorderForeground(theme.Peach).Render("Command Palette\n:"+m.paletteInput)
 	}
 
-	footer := "\n" + theme.Hot.Render("status: "+m.status) + "\n" + theme.Muted.Render("keys: up/down select, enter open, s start session, : palette, q quit")
+	collabStatus := "offline"
+	if m.collabStatus.Online {
+		collabStatus = "online"
+	}
+	lastSync := "-"
+	if !m.collabStatus.LastSyncAt.IsZero() {
+		lastSync = time.Since(m.collabStatus.LastSyncAt).Round(time.Second).String()
+	}
+	footer := "\n" + theme.Hot.Render("status: "+m.status) + "\n" + theme.Muted.Render(fmt.Sprintf("collab:%s peers:%d pending_ops:%d last_sync:%s", collabStatus, m.collabStatus.PeerCount, m.collabStatus.PendingOps, lastSync)) + "\n" + theme.Muted.Render("keys: up/down select, enter open, s start session, : palette, q quit")
 	body := strings.Join([]string{headline, sub, row}, "\n") + palette + footer
 	return theme.App.Render(body)
 }
@@ -466,6 +523,12 @@ func (m Model) executePalette(input string) (tea.Model, tea.Cmd) {
 			VaultPath:  m.vaultPath,
 			Cwd:        m.vaultPath,
 		})
+	case "collab:status":
+		return m, m.loadCollabStatusCmd()
+	case "collab:peers":
+		return m, m.loadCollabPeersCmd()
+	case "collab:reconcile":
+		return m, m.reconcileCollabCmd()
 	default:
 		m.status = "unknown command"
 		return m, nil
@@ -566,6 +629,36 @@ func (m Model) preparePluginTTYCmd(input plugindto.TTYPrepareInput) tea.Cmd {
 	}
 }
 
+func (m Model) loadCollabStatusCmd() tea.Cmd {
+	return func() tea.Msg {
+		if m.collab == nil {
+			return collabStatusMsg{}
+		}
+		status, err := m.collab.Status(context.Background())
+		return collabStatusMsg{status: status, err: err}
+	}
+}
+
+func (m Model) loadCollabPeersCmd() tea.Cmd {
+	return func() tea.Msg {
+		if m.collab == nil {
+			return collabPeersMsg{}
+		}
+		peers, err := m.collab.PeerList(context.Background())
+		return collabPeersMsg{peers: peers, err: err}
+	}
+}
+
+func (m Model) reconcileCollabCmd() tea.Cmd {
+	return func() tea.Msg {
+		if m.collab == nil {
+			return collabReconcileMsg{}
+		}
+		out, err := m.collab.ReconcileNow(context.Background())
+		return collabReconcileMsg{applied: out.Applied, err: err}
+	}
+}
+
 func (m Model) renderLibraryPane(width, height int) string {
 	lines := []string{theme.Title.Render("Library")}
 	if len(m.sources) == 0 {
@@ -650,6 +743,12 @@ func (m Model) renderContextPane(width, height int) string {
 		}
 		for _, item := range m.pluginCommands {
 			lines = append(lines, fmt.Sprintf("- %s (%s)", item.ID, item.Kind))
+		}
+	}
+	if len(m.collabPeers) > 0 {
+		lines = append(lines, "", theme.Title.Render("Collab Peers"))
+		for _, item := range m.collabPeers {
+			lines = append(lines, fmt.Sprintf("- %s", item.PeerID))
 		}
 	}
 	return theme.Pane.Width(width).Height(height).Render(strings.Join(lines, "\n"))

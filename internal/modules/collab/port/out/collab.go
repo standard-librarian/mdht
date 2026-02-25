@@ -41,10 +41,10 @@ type Transport interface {
 }
 
 type TransportStartInput struct {
-	WorkspaceID string
+	WorkspaceID  string
 	WorkspaceKey []byte
 	NodeIdentity domain.NodeIdentity
-	Peers       []domain.Peer
+	Peers        []domain.Peer
 }
 
 type TransportHandlers struct {

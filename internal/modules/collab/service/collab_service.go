@@ -30,17 +30,17 @@ type runtimeState struct {
 }
 
 type CollabService struct {
-	vaultPath  string
-	workspace  collabout.WorkspaceStore
-	peers      collabout.PeerStore
-	oplog      collabout.OpLogStore
-	snapshot   collabout.SnapshotStore
-	extractor  collabout.ProjectionExtractor
-	applier    collabout.ProjectionApplier
-	transport  collabout.Transport
-	daemon     collabout.DaemonStore
-	ipcServer  collabout.IPCServer
-	ipcClient  collabout.IPCClient
+	vaultPath string
+	workspace collabout.WorkspaceStore
+	peers     collabout.PeerStore
+	oplog     collabout.OpLogStore
+	snapshot  collabout.SnapshotStore
+	extractor collabout.ProjectionExtractor
+	applier   collabout.ProjectionApplier
+	transport collabout.Transport
+	daemon    collabout.DaemonStore
+	ipcServer collabout.IPCServer
+	ipcClient collabout.IPCClient
 
 	mu      sync.RWMutex
 	runtime *runtimeState
@@ -60,17 +60,17 @@ func NewCollabService(
 	ipcClient collabout.IPCClient,
 ) *CollabService {
 	return &CollabService{
-		vaultPath:  vaultPath,
-		workspace:  workspace,
-		peers:      peers,
-		oplog:      oplog,
-		snapshot:   snapshot,
-		extractor:  extractor,
-		applier:    applier,
-		transport:  transport,
-		daemon:     daemon,
-		ipcServer:  ipcServer,
-		ipcClient:  ipcClient,
+		vaultPath: vaultPath,
+		workspace: workspace,
+		peers:     peers,
+		oplog:     oplog,
+		snapshot:  snapshot,
+		extractor: extractor,
+		applier:   applier,
+		transport: transport,
+		daemon:    daemon,
+		ipcServer: ipcServer,
+		ipcClient: ipcClient,
 	}
 }
 
@@ -104,10 +104,10 @@ func (s *CollabService) RunDaemon(ctx context.Context) error {
 
 	runCtx, cancel := context.WithCancel(ctx)
 	rt, err := s.transport.Start(runCtx, collabout.TransportStartInput{
-		WorkspaceID: workspace.ID,
+		WorkspaceID:  workspace.ID,
 		WorkspaceKey: key,
 		NodeIdentity: node,
-		Peers:       peers,
+		Peers:        peers,
 	}, collabout.TransportHandlers{
 		OnOp: func(op domain.OpEnvelope) {
 			_ = s.ingestRemoteOp(context.Background(), op)

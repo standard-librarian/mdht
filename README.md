@@ -26,6 +26,18 @@ mdht plugin commands --plugin <plugin-name> --vault /path/to/vault
 mdht plugin exec --plugin <plugin-name> --command <command-id> --input-json '{}' --vault /path/to/vault
 mdht plugin analyze --plugin <plugin-name> --command <command-id> --source-id <source-id> --input-json '{}' --vault /path/to/vault
 mdht plugin tty --plugin <plugin-name> --command <command-id> --input-json '{}' --vault /path/to/vault
+
+mdht collab daemon run --vault /path/to/vault
+mdht collab daemon start --vault /path/to/vault
+mdht collab daemon stop --vault /path/to/vault
+mdht collab daemon status --vault /path/to/vault
+mdht collab workspace init --name "team-a" --vault /path/to/vault
+mdht collab workspace show --vault /path/to/vault
+mdht collab peer add --addr /ip4/203.0.113.10/tcp/4001/p2p/<peer-id> --vault /path/to/vault
+mdht collab peer remove --peer-id <peer-id> --vault /path/to/vault
+mdht collab peer list --vault /path/to/vault
+mdht collab status --vault /path/to/vault
+mdht collab reconcile --vault /path/to/vault
 mdht collab export-state --vault /path/to/vault
 ```
 
@@ -61,5 +73,4 @@ Modules:
 
 ## Deferred (Next Phase)
 
-- collaboration transport/networking (current collab remains local scaffold)
 - plugin marketplace/distribution and remote sandboxing

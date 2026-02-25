@@ -111,7 +111,7 @@ func New(cfg config.Config) (*App, error) {
 }
 
 func RunTUI(vaultPath string, app *App) error {
-	model := uiapp.NewModel(vaultPath, app.LibraryCLI, app.SessionCLI, app.ReaderTUI, app.PluginCLI)
+	model := uiapp.NewModel(vaultPath, app.LibraryCLI, app.SessionCLI, app.ReaderTUI, app.PluginCLI, app.CollabCLI)
 	program := tea.NewProgram(model, tea.WithAltScreen())
 	_, err := program.Run()
 	return err

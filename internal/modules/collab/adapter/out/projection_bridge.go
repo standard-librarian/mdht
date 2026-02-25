@@ -14,9 +14,9 @@ import (
 	"strings"
 	"time"
 
-	librarydomain "mdht/internal/modules/library/domain"
 	"mdht/internal/modules/collab/domain"
 	collabout "mdht/internal/modules/collab/port/out"
+	librarydomain "mdht/internal/modules/library/domain"
 	"mdht/internal/platform/markdown"
 	"mdht/internal/platform/slug"
 )
@@ -148,19 +148,19 @@ func (b *VaultProjectionBridge) extractSourceOps(builder *opBuilder) ([]domain.O
 		ops = append(ops, tombstone)
 
 		scalars := map[string]any{
-			"id":              id,
-			"type":            asString(meta["type"]),
-			"title":           asString(meta["title"]),
-			"authors":         asStringSlice(meta["authors"]),
-			"url":             asString(meta["url"]),
-			"file_path":       asString(meta["file_path"]),
-			"status":          asString(meta["status"]),
+			"id":               id,
+			"type":             asString(meta["type"]),
+			"title":            asString(meta["title"]),
+			"authors":          asStringSlice(meta["authors"]),
+			"url":              asString(meta["url"]),
+			"file_path":        asString(meta["file_path"]),
+			"status":           asString(meta["status"]),
 			"progress_percent": asFloat(meta["progress_percent"]),
-			"unit_kind":       asString(meta["unit_kind"]),
-			"unit_current":    int(asFloat(meta["unit_current"])),
-			"unit_total":      int(asFloat(meta["unit_total"])),
-			"last_session_id": asString(meta["last_session_id"]),
-			"note_path":       path,
+			"unit_kind":        asString(meta["unit_kind"]),
+			"unit_current":     int(asFloat(meta["unit_current"])),
+			"unit_total":       int(asFloat(meta["unit_total"])),
+			"last_session_id":  asString(meta["last_session_id"]),
+			"note_path":        path,
 		}
 		for field, value := range scalars {
 			op, err := builder.make(entityKey, domain.OpKindPutRegister, domain.RegisterPayload{Field: field, Value: mustRawJSON(value)})
@@ -243,17 +243,17 @@ func (b *VaultProjectionBridge) extractSessionOps(builder *opBuilder) ([]domain.
 		ops = append(ops, tombstone)
 
 		scalars := map[string]any{
-			"id":              id,
-			"source_id":       asString(meta["source_id"]),
-			"started_at":      asString(meta["started_at"]),
-			"ended_at":        asString(meta["ended_at"]),
+			"id":               id,
+			"source_id":        asString(meta["source_id"]),
+			"started_at":       asString(meta["started_at"]),
+			"ended_at":         asString(meta["ended_at"]),
 			"duration_minutes": int(asFloat(meta["duration_minutes"])),
-			"goal":            asString(meta["goal"]),
-			"outcome":         asString(meta["outcome"]),
-			"delta_progress":  asFloat(meta["delta_progress"]),
-			"progress_before": asFloat(meta["progress_before"]),
-			"progress_after":  asFloat(meta["progress_after"]),
-			"note_path":       path,
+			"goal":             asString(meta["goal"]),
+			"outcome":          asString(meta["outcome"]),
+			"delta_progress":   asFloat(meta["delta_progress"]),
+			"progress_before":  asFloat(meta["progress_before"]),
+			"progress_after":   asFloat(meta["progress_after"]),
+			"note_path":        path,
 		}
 		for field, value := range scalars {
 			op, err := builder.make(entityKey, domain.OpKindPutRegister, domain.RegisterPayload{Field: field, Value: mustRawJSON(value)})

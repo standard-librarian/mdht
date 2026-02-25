@@ -34,10 +34,10 @@ const (
 type Libp2pTransport struct{}
 
 type libp2pRuntime struct {
-	host        host.Host
-	workspaceID string
+	host         host.Host
+	workspaceID  string
 	workspaceKey []byte
-	handlers    collabout.TransportHandlers
+	handlers     collabout.TransportHandlers
 
 	mu            sync.RWMutex
 	peers         map[string]domain.Peer
@@ -81,11 +81,11 @@ func (t *Libp2pTransport) Start(ctx context.Context, input collabout.TransportSt
 	}
 
 	r := &libp2pRuntime{
-		host:         h,
-		workspaceID:  input.WorkspaceID,
-		workspaceKey: input.WorkspaceKey,
-		handlers:     handlers,
-		peers:        map[string]domain.Peer{},
+		host:          h,
+		workspaceID:   input.WorkspaceID,
+		workspaceKey:  input.WorkspaceKey,
+		handlers:      handlers,
+		peers:         map[string]domain.Peer{},
 		authenticated: map[peer.ID]struct{}{},
 		status: collabout.NetworkStatus{
 			Online:      true,

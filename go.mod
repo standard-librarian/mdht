@@ -6,6 +6,8 @@ require (
 	github.com/charmbracelet/bubbletea v1.2.4
 	github.com/charmbracelet/lipgloss v1.0.0
 	github.com/hashicorp/go-plugin v1.6.2
+	github.com/libp2p/go-libp2p v0.47.0
+	github.com/multiformats/go-multiaddr v0.16.1
 	github.com/spf13/cobra v1.9.1
 	google.golang.org/grpc v1.69.4
 	gopkg.in/yaml.v3 v3.0.1
@@ -52,3 +54,6 @@ require (
 	modernc.org/strutil v1.2.0 // indirect
 	modernc.org/token v1.1.0 // indirect
 )
+
+// Avoid ambiguous imports between go-libp2p monorepo module and legacy split core module.
+exclude github.com/libp2p/go-libp2p/core v0.43.0-rc2
