@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"mdht/internal/modules/collab/domain"
-	collabout "mdht/internal/modules/collab/port/out"
 	librarydomain "mdht/internal/modules/library/domain"
 	"mdht/internal/platform/markdown"
 	"mdht/internal/platform/slug"
