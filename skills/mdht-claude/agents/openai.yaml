@@ -1,0 +1,4 @@
+interface:
+  display_name: "mdht claude"
+  short_description: "Claude wrapper skill for mdht repository conventions."
+  default_prompt: "Apply mdht claude wrappers for plugin-compatible skill invocation and checks."

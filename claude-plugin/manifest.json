@@ -1,0 +1,6 @@
+{
+  "name": "mdht-skills",
+  "version": "0.1.0",
+  "description": "Repository-local Claude skill pack for mdht",
+  "skills": "../skills"
+}

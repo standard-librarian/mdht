@@ -1,0 +1,4 @@
+interface:
+  display_name: "mdht core"
+  short_description: "Core workflow for mdht architecture and development tasks."
+  default_prompt: "Use mdht core workflows for hexagonal modules, CLI flows, and quality gates."

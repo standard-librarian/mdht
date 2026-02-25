@@ -1,0 +1,10 @@
+[
+  {
+    "name": "reference",
+    "version": "1.0.0",
+    "binary": "plugins/reference/bin/reference-plugin",
+    "sha256": "REPLACE_WITH_SHA256",
+    "enabled": true,
+    "capabilities": ["command", "analyze", "fullscreen_tty"]
+  }
+]

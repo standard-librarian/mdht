@@ -1,0 +1,4 @@
+interface:
+  display_name: "mdht codex"
+  short_description: "Codex wrapper skill for mdht repository conventions."
+  default_prompt: "Apply mdht codex wrappers for command patterns and strict module boundaries."

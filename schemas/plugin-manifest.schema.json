@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mdht.local/schemas/plugin-manifest.schema.json",
+  "title": "mdht plugin manifest",
+  "type": "array",
+  "items": {
+    "type": "object",
+    "required": ["name", "version", "binary", "sha256", "enabled", "capabilities"],
+    "properties": {
+      "name": { "type": "string", "minLength": 1 },
+      "version": { "type": "string", "minLength": 1 },
+      "binary": { "type": "string", "minLength": 1 },
+      "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+      "enabled": { "type": "boolean" },
+      "capabilities": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "enum": ["command", "analyze", "fullscreen_tty"]
+        },
+        "minItems": 1
+      }
+    },
+    "additionalProperties": false
+  }
+}

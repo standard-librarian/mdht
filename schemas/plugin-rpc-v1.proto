@@ -1,0 +1,66 @@
+syntax = "proto3";
+
+package mdht.plugin.v1;
+
+option go_package = "mdht/internal/modules/plugin/adapter/out/rpc";
+
+service MdhtPlugin {
+  rpc GetMetadata(Empty) returns (Metadata);
+  rpc ListCommands(Empty) returns (ListCommandsResponse);
+  rpc Execute(ExecuteRequest) returns (ExecuteResponse);
+  rpc PrepareTTY(PrepareTTYRequest) returns (PrepareTTYResponse);
+}
+
+message Empty {}
+
+message Metadata {
+  string name = 1;
+  string version = 2;
+  repeated string capabilities = 3;
+}
+
+message CommandDescriptor {
+  string id = 1;
+  string title = 2;
+  string description = 3;
+  string kind = 4;
+  string input_schema_json = 5;
+  int32 timeout_ms = 6;
+}
+
+message ListCommandsResponse {
+  repeated CommandDescriptor commands = 1;
+}
+
+message ExecuteContext {
+  string vault_path = 1;
+  string source_id = 2;
+  string session_id = 3;
+  string cwd = 4;
+  map<string, string> env = 5;
+}
+
+message ExecuteRequest {
+  string command_id = 1;
+  string input_json = 2;
+  ExecuteContext context = 3;
+}
+
+message ExecuteResponse {
+  string stdout = 1;
+  string stderr = 2;
+  string output_json = 3;
+  int32 exit_code = 4;
+}
+
+message PrepareTTYRequest {
+  string command_id = 1;
+  string input_json = 2;
+  ExecuteContext context = 3;
+}
+
+message PrepareTTYResponse {
+  repeated string argv = 1;
+  string cwd = 2;
+  map<string, string> env = 3;
+}
