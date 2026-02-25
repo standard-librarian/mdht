@@ -597,6 +597,25 @@ func newCollabCmd(vaultPath *string) *cobra.Command {
 			return nil
 		},
 	})
+	var daemonLogTail int
+	daemonLogs := &cobra.Command{
+		Use:   "logs",
+		Short: "Show collab daemon logs",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			app, err := loadApp(*vaultPath)
+			if err != nil {
+				return err
+			}
+			payload, err := app.CollabCLI.DaemonLogs(context.Background(), daemonLogTail)
+			if err != nil {
+				return err
+			}
+			_, _ = fmt.Fprintln(cmd.OutOrStdout(), payload)
+			return nil
+		},
+	}
+	daemonLogs.Flags().IntVar(&daemonLogTail, "tail", 200, "log lines to show from the end")
+	daemon.AddCommand(daemonLogs)
 	collab.AddCommand(daemon)
 
 	var workspaceName string
@@ -722,6 +741,42 @@ func newCollabCmd(vaultPath *string) *cobra.Command {
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "online=%t peers=%d pending_ops=%d workspace=%s node=%s\n", status.Online, status.PeerCount, status.PendingOps, status.WorkspaceID, status.NodeID)
 			if !status.LastSyncAt.IsZero() {
 				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "last_sync=%s\n", status.LastSyncAt.Format(time.RFC3339))
+			}
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "counters invalid_auth=%d workspace_mismatch=%d unauthenticated=%d decode_errors=%d reconnect_attempts=%d reconnect_successes=%d\n",
+				status.Counters.InvalidAuthTag,
+				status.Counters.WorkspaceMismatch,
+				status.Counters.UnauthenticatedPeer,
+				status.Counters.DecodeErrors,
+				status.Counters.ReconnectAttempts,
+				status.Counters.ReconnectSuccesses,
+			)
+			return nil
+		},
+	})
+
+	collab.AddCommand(&cobra.Command{
+		Use:   "doctor",
+		Short: "Run collaboration health checks",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			app, err := loadApp(*vaultPath)
+			if err != nil {
+				return err
+			}
+			out, err := app.CollabCLI.Doctor(context.Background())
+			if err != nil {
+				return err
+			}
+			exitErr := false
+			for _, check := range out.Checks {
+				marker := "OK"
+				if !check.OK {
+					marker = "FAIL"
+					exitErr = true
+				}
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "[%s] %s: %s\n", marker, check.Name, check.Details)
+			}
+			if exitErr {
+				return fmt.Errorf("collab doctor found failing checks")
 			}
 			return nil
 		},

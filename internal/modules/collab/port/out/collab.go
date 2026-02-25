@@ -52,6 +52,17 @@ type TransportHandlers struct {
 	OnStatus func(status NetworkStatus)
 }
 
+type ValidationCounters struct {
+	InvalidAuthTag      int64
+	WorkspaceMismatch   int64
+	UnauthenticatedPeer int64
+	DecodeErrors        int64
+	BroadcastSendErrors int64
+	ReconcileSendErrors int64
+	ReconnectAttempts   int64
+	ReconnectSuccesses  int64
+}
+
 type RuntimeTransport interface {
 	Broadcast(ctx context.Context, op domain.OpEnvelope) error
 	Reconcile(ctx context.Context, ops []domain.OpEnvelope) error
@@ -66,6 +77,7 @@ type NetworkStatus struct {
 	PeerCount   int
 	LastSyncAt  time.Time
 	ListenAddrs []string
+	Counters    ValidationCounters
 }
 
 type DaemonStore interface {
@@ -114,4 +126,18 @@ type DaemonStatus struct {
 	NodeID      string
 	WorkspaceID string
 	ListenAddrs []string
+	Counters    ValidationCounters
+}
+
+type DaemonRuntimeStatus struct {
+	Running    bool
+	PID        int
+	SocketPath string
+	Status     DaemonStatus
+}
+
+type DoctorCheck struct {
+	Name    string
+	OK      bool
+	Details string
 }

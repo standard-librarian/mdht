@@ -55,6 +55,14 @@ func (h CLIHandler) Status(ctx context.Context) (dto.StatusOutput, error) {
 	return h.usecase.Status(ctx)
 }
 
+func (h CLIHandler) Doctor(ctx context.Context) (dto.DoctorOutput, error) {
+	return h.usecase.Doctor(ctx)
+}
+
+func (h CLIHandler) DaemonLogs(ctx context.Context, tail int) (string, error) {
+	return h.usecase.DaemonLogs(ctx, tail)
+}
+
 func (h CLIHandler) ReconcileNow(ctx context.Context) (dto.ReconcileOutput, error) {
 	return h.usecase.ReconcileNow(ctx)
 }

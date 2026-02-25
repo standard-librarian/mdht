@@ -29,6 +29,10 @@ const (
 	authProtocol protocol.ID = "/mdht/collab/auth/1.0.0"
 	opProtocol   protocol.ID = "/mdht/collab/op/1.0.0"
 	syncProtocol protocol.ID = "/mdht/collab/sync/1.0.0"
+
+	initialReconnectBackoff = 500 * time.Millisecond
+	maxReconnectBackoff     = 15 * time.Second
+	steadyPeerCheckInterval = 5 * time.Second
 )
 
 type Libp2pTransport struct{}
@@ -39,10 +43,15 @@ type libp2pRuntime struct {
 	workspaceKey []byte
 	handlers     collabout.TransportHandlers
 
+	ctx    context.Context
+	cancel context.CancelFunc
+
 	mu            sync.RWMutex
 	peers         map[string]domain.Peer
 	authenticated map[peer.ID]struct{}
+	watchers      map[string]context.CancelFunc
 	status        collabout.NetworkStatus
+	stopOnce      sync.Once
 }
 
 type authRequest struct {
@@ -80,13 +89,17 @@ func (t *Libp2pTransport) Start(ctx context.Context, input collabout.TransportSt
 		return nil, fmt.Errorf("start libp2p host: %w", err)
 	}
 
+	runCtx, cancel := context.WithCancel(ctx)
 	r := &libp2pRuntime{
 		host:          h,
 		workspaceID:   input.WorkspaceID,
 		workspaceKey:  input.WorkspaceKey,
 		handlers:      handlers,
+		ctx:           runCtx,
+		cancel:        cancel,
 		peers:         map[string]domain.Peer{},
 		authenticated: map[peer.ID]struct{}{},
+		watchers:      map[string]context.CancelFunc{},
 		status: collabout.NetworkStatus{
 			Online:      true,
 			LastSyncAt:  time.Now().UTC(),
@@ -99,12 +112,12 @@ func (t *Libp2pTransport) Start(ctx context.Context, input collabout.TransportSt
 	h.SetStreamHandler(syncProtocol, r.handleSync)
 
 	for _, configuredPeer := range input.Peers {
-		_ = r.AddPeer(ctx, configuredPeer)
+		r.startPeerWatcher(configuredPeer)
 	}
 	r.emitStatus()
 
 	go func() {
-		<-ctx.Done()
+		<-runCtx.Done()
 		_ = r.Stop()
 	}()
 
@@ -118,6 +131,7 @@ func (r *libp2pRuntime) Broadcast(ctx context.Context, op domain.OpEnvelope) err
 	}
 	for _, id := range r.authenticatedPeers() {
 		if err := r.writeMessage(ctx, id, opProtocol, payload); err != nil {
+			r.incrementCounter(func(c *collabout.ValidationCounters) { c.BroadcastSendErrors++ })
 			continue
 		}
 	}
@@ -132,6 +146,7 @@ func (r *libp2pRuntime) Reconcile(ctx context.Context, ops []domain.OpEnvelope) 
 	}
 	for _, id := range r.authenticatedPeers() {
 		if err := r.writeMessage(ctx, id, syncProtocol, payload); err != nil {
+			r.incrementCounter(func(c *collabout.ValidationCounters) { c.ReconcileSendErrors++ })
 			continue
 		}
 	}
@@ -142,41 +157,40 @@ func (r *libp2pRuntime) Reconcile(ctx context.Context, ops []domain.OpEnvelope) 
 func (r *libp2pRuntime) AddPeer(ctx context.Context, peerInfo domain.Peer) error {
 	addr, err := multiaddr.NewMultiaddr(peerInfo.Address)
 	if err != nil {
-		return err
+		return fmt.Errorf("%w: %v", domain.ErrInvalidPeerAddress, err)
 	}
 	info, err := peer.AddrInfoFromP2pAddr(addr)
 	if err != nil {
-		return err
+		return fmt.Errorf("%w: %v", domain.ErrInvalidPeerAddress, err)
 	}
-	r.host.Peerstore().AddAddrs(info.ID, info.Addrs, peerstore.PermanentAddrTTL)
-	dialCtx, cancel := context.WithTimeout(ctx, 4*time.Second)
+	attemptCtx, cancel := context.WithTimeout(ctx, 4*time.Second)
 	defer cancel()
-	if err := r.host.Connect(dialCtx, *info); err != nil {
+	if err := r.connectAndAuthenticate(attemptCtx, peerInfo); err != nil {
 		return err
 	}
-	if err := r.authenticatePeer(dialCtx, info.ID); err != nil {
-		return err
-	}
-
-	r.mu.Lock()
-	r.peers[peerInfo.PeerID] = peerInfo
-	r.status.PeerCount = len(r.authenticated)
-	r.mu.Unlock()
-	r.emitStatus()
+	peerInfo.PeerID = info.ID.String()
+	r.startPeerWatcher(peerInfo)
 	return nil
 }
 
 func (r *libp2pRuntime) RemovePeer(_ context.Context, peerID string) error {
-	pid, err := peer.Decode(peerID)
-	if err != nil {
-		return err
-	}
 	r.mu.Lock()
+	cancel, ok := r.watchers[peerID]
+	if ok {
+		cancel()
+		delete(r.watchers, peerID)
+	}
 	delete(r.peers, peerID)
-	delete(r.authenticated, pid)
+	pid, decodeErr := peer.Decode(peerID)
+	if decodeErr == nil {
+		delete(r.authenticated, pid)
+	}
 	r.status.PeerCount = len(r.authenticated)
 	r.mu.Unlock()
-	_ = r.host.Network().ClosePeer(pid)
+
+	if decodeErr == nil {
+		_ = r.host.Network().ClosePeer(pid)
+	}
 	r.emitStatus()
 	return nil
 }
@@ -188,12 +202,108 @@ func (r *libp2pRuntime) Status() collabout.NetworkStatus {
 }
 
 func (r *libp2pRuntime) Stop() error {
+	var stopErr error
+	r.stopOnce.Do(func() {
+		r.cancel()
+		r.mu.Lock()
+		for _, cancel := range r.watchers {
+			cancel()
+		}
+		r.watchers = map[string]context.CancelFunc{}
+		r.status.Online = false
+		r.status.PeerCount = 0
+		r.mu.Unlock()
+		r.emitStatus()
+		stopErr = r.host.Close()
+	})
+	return stopErr
+}
+
+func (r *libp2pRuntime) startPeerWatcher(peerInfo domain.Peer) {
 	r.mu.Lock()
-	r.status.Online = false
-	r.status.PeerCount = 0
+	if existingCancel, exists := r.watchers[peerInfo.PeerID]; exists {
+		existingCancel()
+	}
+	watchCtx, cancel := context.WithCancel(r.ctx)
+	r.watchers[peerInfo.PeerID] = cancel
+	r.peers[peerInfo.PeerID] = peerInfo
 	r.mu.Unlock()
-	r.emitStatus()
-	return r.host.Close()
+
+	go func() {
+		backoff := initialReconnectBackoff
+		for {
+			select {
+			case <-watchCtx.Done():
+				return
+			default:
+			}
+
+			r.incrementCounter(func(c *collabout.ValidationCounters) { c.ReconnectAttempts++ })
+			err := r.connectAndAuthenticate(watchCtx, peerInfo)
+			if err == nil {
+				r.incrementCounter(func(c *collabout.ValidationCounters) { c.ReconnectSuccesses++ })
+				backoff = initialReconnectBackoff
+				if !r.waitUntilDisconnected(watchCtx, peerInfo.PeerID) {
+					return
+				}
+				continue
+			}
+
+			select {
+			case <-time.After(backoff):
+			case <-watchCtx.Done():
+				return
+			}
+			backoff *= 2
+			if backoff > maxReconnectBackoff {
+				backoff = maxReconnectBackoff
+			}
+		}
+	}()
+}
+
+func (r *libp2pRuntime) connectAndAuthenticate(ctx context.Context, peerInfo domain.Peer) error {
+	addr, err := multiaddr.NewMultiaddr(peerInfo.Address)
+	if err != nil {
+		return err
+	}
+	info, err := peer.AddrInfoFromP2pAddr(addr)
+	if err != nil {
+		return err
+	}
+	r.host.Peerstore().AddAddrs(info.ID, info.Addrs, peerstore.PermanentAddrTTL)
+	if err := r.host.Connect(ctx, *info); err != nil {
+		return err
+	}
+	if err := r.authenticatePeer(ctx, info.ID); err != nil {
+		_ = r.host.Network().ClosePeer(info.ID)
+		return err
+	}
+	return nil
+}
+
+func (r *libp2pRuntime) waitUntilDisconnected(ctx context.Context, peerID string) bool {
+	pid, err := peer.Decode(peerID)
+	if err != nil {
+		return true
+	}
+	ticker := time.NewTicker(steadyPeerCheckInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return false
+		case <-ticker.C:
+			if r.host.Network().Connectedness(pid) != network.Connected {
+				r.mu.Lock()
+				delete(r.authenticated, pid)
+				r.status.PeerCount = len(r.authenticated)
+				r.mu.Unlock()
+				r.emitStatus()
+				return true
+			}
+		}
+	}
 }
 
 func (r *libp2pRuntime) authenticatePeer(ctx context.Context, peerID peer.ID) error {
@@ -216,12 +326,15 @@ func (r *libp2pRuntime) authenticatePeer(ctx context.Context, peerID peer.ID) er
 	}
 	resp := authResponse{}
 	if err := decoder.Decode(&resp); err != nil {
+		r.incrementCounter(func(c *collabout.ValidationCounters) { c.DecodeErrors++ })
 		return err
 	}
 	if resp.WorkspaceID != r.workspaceID || resp.Nonce != nonce {
+		r.incrementCounter(func(c *collabout.ValidationCounters) { c.WorkspaceMismatch++ })
 		return domain.ErrWorkspaceMismatch
 	}
 	if !verifyAuth(r.workspaceKey, r.workspaceID, resp.Nonce, resp.Tag) {
+		r.incrementCounter(func(c *collabout.ValidationCounters) { c.InvalidAuthTag++ })
 		return domain.ErrInvalidAuthTag
 	}
 
@@ -239,12 +352,15 @@ func (r *libp2pRuntime) handleAuth(stream network.Stream) {
 	encoder := json.NewEncoder(stream)
 	req := authRequest{}
 	if err := decoder.Decode(&req); err != nil {
+		r.incrementCounter(func(c *collabout.ValidationCounters) { c.DecodeErrors++ })
 		return
 	}
 	if req.WorkspaceID != r.workspaceID {
+		r.incrementCounter(func(c *collabout.ValidationCounters) { c.WorkspaceMismatch++ })
 		return
 	}
 	if !verifyAuth(r.workspaceKey, req.WorkspaceID, req.Nonce, req.Tag) {
+		r.incrementCounter(func(c *collabout.ValidationCounters) { c.InvalidAuthTag++ })
 		return
 	}
 	peerID := stream.Conn().RemotePeer()
@@ -254,21 +370,26 @@ func (r *libp2pRuntime) handleAuth(stream network.Stream) {
 	r.mu.Unlock()
 	r.emitStatus()
 
-	_ = encoder.Encode(authResponse{
+	if err := encoder.Encode(authResponse{
 		WorkspaceID: r.workspaceID,
 		Nonce:       req.Nonce,
 		Tag:         signAuth(r.workspaceKey, r.workspaceID, req.Nonce),
 		NodeID:      r.host.ID().String(),
-	})
+	}); err != nil {
+		r.incrementCounter(func(c *collabout.ValidationCounters) { c.DecodeErrors++ })
+		return
+	}
 }
 
 func (r *libp2pRuntime) handleOp(stream network.Stream) {
 	defer stream.Close()
 	if !r.isAuthenticated(stream.Conn().RemotePeer()) {
+		r.incrementCounter(func(c *collabout.ValidationCounters) { c.UnauthenticatedPeer++ })
 		return
 	}
 	op := domain.OpEnvelope{}
 	if err := json.NewDecoder(stream).Decode(&op); err != nil {
+		r.incrementCounter(func(c *collabout.ValidationCounters) { c.DecodeErrors++ })
 		return
 	}
 	if r.handlers.OnOp != nil {
@@ -280,10 +401,12 @@ func (r *libp2pRuntime) handleOp(stream network.Stream) {
 func (r *libp2pRuntime) handleSync(stream network.Stream) {
 	defer stream.Close()
 	if !r.isAuthenticated(stream.Conn().RemotePeer()) {
+		r.incrementCounter(func(c *collabout.ValidationCounters) { c.UnauthenticatedPeer++ })
 		return
 	}
 	ops := []domain.OpEnvelope{}
 	if err := json.NewDecoder(stream).Decode(&ops); err != nil {
+		r.incrementCounter(func(c *collabout.ValidationCounters) { c.DecodeErrors++ })
 		return
 	}
 	if r.handlers.OnOp != nil {
@@ -300,8 +423,10 @@ func (r *libp2pRuntime) writeMessage(ctx context.Context, id peer.ID, p protocol
 		return err
 	}
 	defer stream.Close()
-	_, err = stream.Write(payload)
-	return err
+	if _, err := stream.Write(payload); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (r *libp2pRuntime) authenticatedPeers() []peer.ID {
@@ -324,6 +449,13 @@ func (r *libp2pRuntime) isAuthenticated(id peer.ID) bool {
 func (r *libp2pRuntime) markSynced() {
 	r.mu.Lock()
 	r.status.LastSyncAt = time.Now().UTC()
+	r.mu.Unlock()
+	r.emitStatus()
+}
+
+func (r *libp2pRuntime) incrementCounter(update func(c *collabout.ValidationCounters)) {
+	r.mu.Lock()
+	update(&r.status.Counters)
 	r.mu.Unlock()
 	r.emitStatus()
 }

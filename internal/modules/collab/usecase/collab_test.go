@@ -18,26 +18,11 @@ type fakeService struct {
 func (f fakeService) RunDaemon(context.Context) error   { return f.err }
 func (f fakeService) StartDaemon(context.Context) error { return f.err }
 func (f fakeService) StopDaemon(context.Context) error  { return f.err }
-func (f fakeService) DaemonStatus(context.Context) (struct {
-	Running    bool
-	PID        int
-	SocketPath string
-	Status     collabout.DaemonStatus
-}, error) {
+func (f fakeService) DaemonStatus(context.Context) (collabout.DaemonRuntimeStatus, error) {
 	if f.err != nil {
-		return struct {
-			Running    bool
-			PID        int
-			SocketPath string
-			Status     collabout.DaemonStatus
-		}{}, f.err
+		return collabout.DaemonRuntimeStatus{}, f.err
 	}
-	return struct {
-		Running    bool
-		PID        int
-		SocketPath string
-		Status     collabout.DaemonStatus
-	}{
+	return collabout.DaemonRuntimeStatus{
 		Running:    true,
 		PID:        123,
 		SocketPath: "/tmp/sock",
@@ -49,6 +34,10 @@ func (f fakeService) DaemonStatus(context.Context) (struct {
 			NodeID:      "node-a",
 			WorkspaceID: "ws-a",
 			ListenAddrs: []string{"/ip4/127.0.0.1/tcp/4001/p2p/peer"},
+			Counters: collabout.ValidationCounters{
+				ReconnectAttempts:  3,
+				ReconnectSuccesses: 2,
+			},
 		},
 	}, nil
 }
@@ -81,7 +70,22 @@ func (f fakeService) Status(context.Context) (collabout.DaemonStatus, error) {
 	if f.err != nil {
 		return collabout.DaemonStatus{}, f.err
 	}
-	return collabout.DaemonStatus{Online: true, PeerCount: 1, PendingOps: 2, NodeID: "node-a", WorkspaceID: "ws-a"}, nil
+	return collabout.DaemonStatus{Online: true, PeerCount: 1, PendingOps: 2, NodeID: "node-a", WorkspaceID: "ws-a", Counters: collabout.ValidationCounters{InvalidAuthTag: 1}}, nil
+}
+func (f fakeService) Doctor(context.Context) ([]collabout.DoctorCheck, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return []collabout.DoctorCheck{
+		{Name: "workspace", OK: true, Details: "ok"},
+		{Name: "daemon", OK: false, Details: "stopped"},
+	}, nil
+}
+func (f fakeService) DaemonLogs(context.Context, int) (string, error) {
+	if f.err != nil {
+		return "", f.err
+	}
+	return "line 1\nline 2", nil
 }
 func (f fakeService) ReconcileNow(context.Context) (int, error) {
 	if f.err != nil {
@@ -161,6 +165,25 @@ func TestInteractorSuccess(t *testing.T) {
 	if !status.Online || status.WorkspaceID != "ws-a" {
 		t.Fatalf("unexpected collab status: %+v", status)
 	}
+	if status.Counters.InvalidAuthTag != 1 {
+		t.Fatalf("expected mapped counters in status output")
+	}
+
+	doctor, err := uc.Doctor(ctx)
+	if err != nil {
+		t.Fatalf("doctor: %v", err)
+	}
+	if len(doctor.Checks) != 2 {
+		t.Fatalf("unexpected doctor checks: %+v", doctor)
+	}
+
+	logs, err := uc.DaemonLogs(ctx, 10)
+	if err != nil {
+		t.Fatalf("daemon logs: %v", err)
+	}
+	if logs == "" {
+		t.Fatalf("expected daemon logs payload")
+	}
 
 	reconciled, err := uc.ReconcileNow(ctx)
 	if err != nil {
@@ -213,6 +236,12 @@ func TestInteractorErrors(t *testing.T) {
 	}
 	if _, err := uc.Status(ctx); err == nil {
 		t.Fatalf("expected status error")
+	}
+	if _, err := uc.Doctor(ctx); err == nil {
+		t.Fatalf("expected doctor error")
+	}
+	if _, err := uc.DaemonLogs(ctx, 20); err == nil {
+		t.Fatalf("expected daemon logs error")
 	}
 	if _, err := uc.ReconcileNow(ctx); err == nil {
 		t.Fatalf("expected reconcile error")

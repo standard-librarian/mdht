@@ -1,0 +1,57 @@
+# Releases and Upgrades
+
+This document defines the beta release format, verification steps, and upgrade procedure.
+
+## Release artifacts
+
+Each Git tag matching `v*` publishes:
+
+- `mdht_<version>_linux_amd64.tar.gz`
+- `mdht_<version>_linux_arm64.tar.gz`
+- `mdht_<version>_darwin_amd64.tar.gz`
+- `mdht_<version>_darwin_arm64.tar.gz`
+- `checksums.txt`
+
+Example tag:
+
+- `v0.5.0-beta.1`
+
+Then `<version>` in asset names is:
+
+- `0.5.0-beta.1`
+
+## Verify downloads
+
+On macOS:
+
+```bash
+ASSET="mdht_0.5.0-beta.1_darwin_arm64.tar.gz"
+grep " ${ASSET}$" checksums.txt | shasum -a 256 -c -
+```
+
+On Linux:
+
+```bash
+ASSET="mdht_0.5.0-beta.1_linux_amd64.tar.gz"
+grep " ${ASSET}$" checksums.txt | sha256sum -c -
+```
+
+## Upgrade procedure
+
+1. Download new asset and `checksums.txt`.
+2. Verify checksum.
+3. Stop running collab daemon(s):
+   - `mdht collab daemon stop --vault <path>`
+4. Replace binary.
+5. Start daemon:
+   - `mdht collab daemon start --vault <path>`
+6. Validate:
+   - `mdht collab doctor --vault <path>`
+   - `mdht collab status --vault <path>`
+
+## Compatibility policy in beta
+
+- CLI and docs may evolve between beta tags.
+- Existing commands are kept stable where practical.
+- For contract-level changes, ADRs under `docs/adr/` are updated.
+

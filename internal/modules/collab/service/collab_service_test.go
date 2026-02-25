@@ -1,0 +1,287 @@
+package service_test
+
+import (
+	"context"
+	"errors"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+
+	"mdht/internal/modules/collab/domain"
+	collabout "mdht/internal/modules/collab/port/out"
+	"mdht/internal/modules/collab/service"
+)
+
+type fakeWorkspaceStore struct {
+	workspace domain.Workspace
+	key       []byte
+	node      domain.NodeIdentity
+	err       error
+}
+
+func (f fakeWorkspaceStore) Init(context.Context, string) (domain.Workspace, []byte, domain.NodeIdentity, error) {
+	if f.err != nil {
+		return domain.Workspace{}, nil, domain.NodeIdentity{}, f.err
+	}
+	return f.workspace, f.key, f.node, nil
+}
+
+func (f fakeWorkspaceStore) Load(context.Context) (domain.Workspace, []byte, domain.NodeIdentity, error) {
+	if f.err != nil {
+		return domain.Workspace{}, nil, domain.NodeIdentity{}, f.err
+	}
+	return f.workspace, f.key, f.node, nil
+}
+
+type fakePeerStore struct {
+	peers []domain.Peer
+	err   error
+}
+
+func (f *fakePeerStore) Add(context.Context, string) (domain.Peer, error) {
+	if f.err != nil {
+		return domain.Peer{}, f.err
+	}
+	peer := domain.Peer{PeerID: "peer-a", Address: "/ip4/127.0.0.1/tcp/4001/p2p/peer-a", AddedAt: time.Now().UTC()}
+	f.peers = append(f.peers, peer)
+	return peer, nil
+}
+
+func (f *fakePeerStore) Remove(_ context.Context, peerID string) error {
+	out := make([]domain.Peer, 0, len(f.peers))
+	for _, peer := range f.peers {
+		if peer.PeerID != peerID {
+			out = append(out, peer)
+		}
+	}
+	f.peers = out
+	return nil
+}
+
+func (f *fakePeerStore) List(context.Context) ([]domain.Peer, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return append([]domain.Peer{}, f.peers...), nil
+}
+
+type fakeOpLogStore struct{ ops []domain.OpEnvelope }
+
+func (f *fakeOpLogStore) Append(_ context.Context, op domain.OpEnvelope) error {
+	f.ops = append(f.ops, op)
+	return nil
+}
+
+func (f *fakeOpLogStore) List(context.Context) ([]domain.OpEnvelope, error) {
+	return append([]domain.OpEnvelope{}, f.ops...), nil
+}
+
+type fakeSnapshotStore struct{ state domain.CRDTState }
+
+func (f *fakeSnapshotStore) Load(context.Context) (domain.CRDTState, error) {
+	if f.state.Entities == nil {
+		f.state = domain.NewCRDTState()
+	}
+	return f.state, nil
+}
+
+func (f *fakeSnapshotStore) Save(_ context.Context, state domain.CRDTState) error {
+	f.state = state
+	return nil
+}
+
+type fakeExtractor struct{}
+
+func (fakeExtractor) Extract(context.Context, string, string, time.Time) ([]domain.OpEnvelope, error) {
+	return nil, nil
+}
+
+type fakeApplier struct{}
+
+func (fakeApplier) Apply(context.Context, domain.CRDTState) error { return nil }
+
+type fakeTransport struct{}
+
+func (fakeTransport) Start(context.Context, collabout.TransportStartInput, collabout.TransportHandlers) (collabout.RuntimeTransport, error) {
+	return fakeRuntimeTransport{}, nil
+}
+
+type fakeRuntimeTransport struct{}
+
+func (fakeRuntimeTransport) Broadcast(context.Context, domain.OpEnvelope) error { return nil }
+func (fakeRuntimeTransport) Reconcile(context.Context, []domain.OpEnvelope) error {
+	return nil
+}
+func (fakeRuntimeTransport) AddPeer(context.Context, domain.Peer) error { return nil }
+func (fakeRuntimeTransport) RemovePeer(context.Context, string) error   { return nil }
+func (fakeRuntimeTransport) Status() collabout.NetworkStatus            { return collabout.NetworkStatus{} }
+func (fakeRuntimeTransport) Stop() error                                { return nil }
+
+type fakeDaemonStore struct {
+	pidPath    string
+	socketPath string
+	logPath    string
+}
+
+func newFakeDaemonStore(vaultPath string) *fakeDaemonStore {
+	base := filepath.Join(vaultPath, ".mdht", "collab")
+	return &fakeDaemonStore{
+		pidPath:    filepath.Join(base, "daemon.pid"),
+		socketPath: filepath.Join(base, "daemon.sock"),
+		logPath:    filepath.Join(base, "daemon.log"),
+	}
+}
+
+func (d *fakeDaemonStore) WritePID(_ context.Context, pid int) error {
+	if err := os.MkdirAll(filepath.Dir(d.pidPath), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(d.pidPath, []byte(strconv.Itoa(pid)), 0o644)
+}
+
+func (d *fakeDaemonStore) ReadPID(_ context.Context) (int, error) {
+	raw, err := os.ReadFile(d.pidPath)
+	if err != nil {
+		return 0, err
+	}
+	return strconv.Atoi(strings.TrimSpace(string(raw)))
+}
+
+func (d *fakeDaemonStore) ClearPID(_ context.Context) error {
+	if err := os.Remove(d.pidPath); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
+func (d *fakeDaemonStore) SocketPath() string { return d.socketPath }
+func (d *fakeDaemonStore) LogPath() string    { return d.logPath }
+
+type fakeIPCServer struct{}
+
+func (fakeIPCServer) Serve(context.Context, string, collabout.IPCHandler) error { return nil }
+
+type fakeIPCClient struct{}
+
+func (fakeIPCClient) WorkspaceInit(context.Context, string, string) (domain.Workspace, error) {
+	return domain.Workspace{}, errors.New("not implemented")
+}
+func (fakeIPCClient) WorkspaceShow(context.Context, string) (domain.Workspace, string, []domain.Peer, error) {
+	return domain.Workspace{}, "", nil, errors.New("not implemented")
+}
+func (fakeIPCClient) PeerAdd(context.Context, string, string) (domain.Peer, error) {
+	return domain.Peer{}, errors.New("not implemented")
+}
+func (fakeIPCClient) PeerRemove(context.Context, string, string) error {
+	return errors.New("not implemented")
+}
+func (fakeIPCClient) PeerList(context.Context, string) ([]domain.Peer, error) {
+	return nil, errors.New("not implemented")
+}
+func (fakeIPCClient) Status(context.Context, string) (collabout.DaemonStatus, error) {
+	return collabout.DaemonStatus{}, errors.New("not implemented")
+}
+func (fakeIPCClient) ReconcileNow(context.Context, string) (int, error) {
+	return 0, errors.New("not implemented")
+}
+func (fakeIPCClient) ExportState(context.Context, string) (string, error) {
+	return "", errors.New("not implemented")
+}
+func (fakeIPCClient) Stop(context.Context, string) error { return nil }
+
+func newServiceForTest(vaultPath string, workspaceErr error, peers []domain.Peer) (*service.CollabService, *fakeDaemonStore) {
+	ws := fakeWorkspaceStore{
+		workspace: domain.Workspace{ID: "ws-1", Name: "alpha", CreatedAt: time.Date(2026, 2, 25, 12, 0, 0, 0, time.UTC)},
+		key:       []byte("12345678901234567890123456789012"),
+		node:      domain.NodeIdentity{NodeID: "node-a", PrivateKey: ""},
+		err:       workspaceErr,
+	}
+	peerStore := &fakePeerStore{peers: peers}
+	daemonStore := newFakeDaemonStore(vaultPath)
+	return service.NewCollabService(
+		vaultPath,
+		ws,
+		peerStore,
+		&fakeOpLogStore{},
+		&fakeSnapshotStore{state: domain.NewCRDTState()},
+		fakeExtractor{},
+		fakeApplier{},
+		fakeTransport{},
+		daemonStore,
+		fakeIPCServer{},
+		fakeIPCClient{},
+	), daemonStore
+}
+
+func TestStopDaemonIdempotentAndStaleCleanup(t *testing.T) {
+	t.Parallel()
+	vault := t.TempDir()
+	svc, daemonStore := newServiceForTest(vault, domain.ErrWorkspaceNotInitialized, nil)
+
+	if err := svc.StopDaemon(context.Background()); err != nil {
+		t.Fatalf("stop daemon first call: %v", err)
+	}
+	if err := svc.StopDaemon(context.Background()); err != nil {
+		t.Fatalf("stop daemon second call: %v", err)
+	}
+
+	if err := daemonStore.WritePID(context.Background(), 999999); err != nil {
+		t.Fatalf("write stale pid: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(daemonStore.SocketPath()), 0o755); err != nil {
+		t.Fatalf("mk socket dir: %v", err)
+	}
+	if err := os.WriteFile(daemonStore.SocketPath(), []byte("stale"), 0o644); err != nil {
+		t.Fatalf("write stale socket: %v", err)
+	}
+	if err := svc.StopDaemon(context.Background()); err != nil {
+		t.Fatalf("stop daemon stale cleanup: %v", err)
+	}
+	if _, err := daemonStore.ReadPID(context.Background()); !os.IsNotExist(err) {
+		t.Fatalf("expected pid file removed, got err=%v", err)
+	}
+	if _, err := os.Stat(daemonStore.SocketPath()); !os.IsNotExist(err) {
+		t.Fatalf("expected socket removed, got err=%v", err)
+	}
+}
+
+func TestDaemonLogsTail(t *testing.T) {
+	t.Parallel()
+	vault := t.TempDir()
+	svc, daemonStore := newServiceForTest(vault, domain.ErrWorkspaceNotInitialized, nil)
+
+	if err := os.MkdirAll(filepath.Dir(daemonStore.LogPath()), 0o755); err != nil {
+		t.Fatalf("mkdir logs: %v", err)
+	}
+	if err := os.WriteFile(daemonStore.LogPath(), []byte("l1\nl2\nl3\n"), 0o644); err != nil {
+		t.Fatalf("write logs: %v", err)
+	}
+	logs, err := svc.DaemonLogs(context.Background(), 2)
+	if err != nil {
+		t.Fatalf("daemon logs: %v", err)
+	}
+	if strings.TrimSpace(logs) != "l2\nl3" {
+		t.Fatalf("unexpected tail output: %q", logs)
+	}
+}
+
+func TestDoctorAndReconcileNoDaemon(t *testing.T) {
+	t.Parallel()
+	vault := t.TempDir()
+	svc, _ := newServiceForTest(vault, nil, []domain.Peer{{PeerID: "peer-a", Address: "/ip4/127.0.0.1/tcp/4001/p2p/peer-a"}})
+
+	checks, err := svc.Doctor(context.Background())
+	if err != nil {
+		t.Fatalf("doctor: %v", err)
+	}
+	if len(checks) == 0 {
+		t.Fatalf("expected doctor checks")
+	}
+
+	if _, err := svc.ReconcileNow(context.Background()); !errors.Is(err, domain.ErrDaemonNotRunning) {
+		t.Fatalf("expected daemon not running error, got %v", err)
+	}
+}

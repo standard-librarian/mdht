@@ -20,6 +20,8 @@ type Usecase interface {
 	PeerList(ctx context.Context) ([]dto.PeerOutput, error)
 
 	Status(ctx context.Context) (dto.StatusOutput, error)
+	Doctor(ctx context.Context) (dto.DoctorOutput, error)
+	DaemonLogs(ctx context.Context, tail int) (string, error)
 	ReconcileNow(ctx context.Context) (dto.ReconcileOutput, error)
 	ExportState(ctx context.Context) (dto.ExportStateOutput, error)
 }

@@ -13,18 +13,15 @@ type servicePort interface {
 	RunDaemon(ctx context.Context) error
 	StartDaemon(ctx context.Context) error
 	StopDaemon(ctx context.Context) error
-	DaemonStatus(ctx context.Context) (struct {
-		Running    bool
-		PID        int
-		SocketPath string
-		Status     collabout.DaemonStatus
-	}, error)
+	DaemonStatus(ctx context.Context) (collabout.DaemonRuntimeStatus, error)
 	WorkspaceInit(ctx context.Context, name string) (domain.Workspace, error)
 	WorkspaceShow(ctx context.Context) (domain.Workspace, string, []domain.Peer, error)
 	PeerAdd(ctx context.Context, addr string) (domain.Peer, error)
 	PeerRemove(ctx context.Context, peerID string) error
 	PeerList(ctx context.Context) ([]domain.Peer, error)
 	Status(ctx context.Context) (collabout.DaemonStatus, error)
+	Doctor(ctx context.Context) ([]collabout.DoctorCheck, error)
+	DaemonLogs(ctx context.Context, tail int) (string, error)
 	ReconcileNow(ctx context.Context) (int, error)
 	ExportState(ctx context.Context) (string, error)
 }
@@ -66,6 +63,16 @@ func (i *Interactor) DaemonStatus(ctx context.Context) (dto.DaemonStatusOutput, 
 			NodeID:      status.Status.NodeID,
 			WorkspaceID: status.Status.WorkspaceID,
 			ListenAddrs: status.Status.ListenAddrs,
+			Counters: dto.ValidationCountersOutput{
+				InvalidAuthTag:      status.Status.Counters.InvalidAuthTag,
+				WorkspaceMismatch:   status.Status.Counters.WorkspaceMismatch,
+				UnauthenticatedPeer: status.Status.Counters.UnauthenticatedPeer,
+				DecodeErrors:        status.Status.Counters.DecodeErrors,
+				BroadcastSendErrors: status.Status.Counters.BroadcastSendErrors,
+				ReconcileSendErrors: status.Status.Counters.ReconcileSendErrors,
+				ReconnectAttempts:   status.Status.Counters.ReconnectAttempts,
+				ReconnectSuccesses:  status.Status.Counters.ReconnectSuccesses,
+			},
 		},
 	}, nil
 }
@@ -127,7 +134,33 @@ func (i *Interactor) Status(ctx context.Context) (dto.StatusOutput, error) {
 		NodeID:      status.NodeID,
 		WorkspaceID: status.WorkspaceID,
 		ListenAddrs: status.ListenAddrs,
+		Counters: dto.ValidationCountersOutput{
+			InvalidAuthTag:      status.Counters.InvalidAuthTag,
+			WorkspaceMismatch:   status.Counters.WorkspaceMismatch,
+			UnauthenticatedPeer: status.Counters.UnauthenticatedPeer,
+			DecodeErrors:        status.Counters.DecodeErrors,
+			BroadcastSendErrors: status.Counters.BroadcastSendErrors,
+			ReconcileSendErrors: status.Counters.ReconcileSendErrors,
+			ReconnectAttempts:   status.Counters.ReconnectAttempts,
+			ReconnectSuccesses:  status.Counters.ReconnectSuccesses,
+		},
 	}, nil
+}
+
+func (i *Interactor) Doctor(ctx context.Context) (dto.DoctorOutput, error) {
+	checks, err := i.svc.Doctor(ctx)
+	if err != nil {
+		return dto.DoctorOutput{}, err
+	}
+	out := make([]dto.DoctorCheckOutput, 0, len(checks))
+	for _, check := range checks {
+		out = append(out, dto.DoctorCheckOutput{Name: check.Name, OK: check.OK, Details: check.Details})
+	}
+	return dto.DoctorOutput{Checks: out}, nil
+}
+
+func (i *Interactor) DaemonLogs(ctx context.Context, tail int) (string, error) {
+	return i.svc.DaemonLogs(ctx, tail)
 }
 
 func (i *Interactor) ReconcileNow(ctx context.Context) (dto.ReconcileOutput, error) {

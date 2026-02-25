@@ -22,6 +22,8 @@ var (
 	ErrInvalidAuthTag          = errors.New("invalid auth tag")
 	ErrWorkspaceMismatch       = errors.New("workspace mismatch")
 	ErrUnknownOpKind           = errors.New("unknown op kind")
+	ErrDaemonNotRunning        = errors.New("collab daemon is not running")
+	ErrDaemonStartFailed       = errors.New("collab daemon start failed")
 )
 
 type OpKind string

@@ -29,6 +29,7 @@ type StatusOutput struct {
 	NodeID      string
 	WorkspaceID string
 	ListenAddrs []string
+	Counters    ValidationCountersOutput
 }
 
 type DaemonStatusOutput struct {
@@ -36,6 +37,27 @@ type DaemonStatusOutput struct {
 	PID        int
 	SocketPath string
 	Status     StatusOutput
+}
+
+type ValidationCountersOutput struct {
+	InvalidAuthTag      int64
+	WorkspaceMismatch   int64
+	UnauthenticatedPeer int64
+	DecodeErrors        int64
+	BroadcastSendErrors int64
+	ReconcileSendErrors int64
+	ReconnectAttempts   int64
+	ReconnectSuccesses  int64
+}
+
+type DoctorCheckOutput struct {
+	Name    string
+	OK      bool
+	Details string
+}
+
+type DoctorOutput struct {
+	Checks []DoctorCheckOutput
 }
 
 type ReconcileOutput struct {
