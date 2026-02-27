@@ -89,6 +89,12 @@ mdht collab peer add --addr /ip4/<B-IP>/tcp/<B-PORT>/p2p/<B-PEER-ID> --vault /va
 mdht collab peer approve --peer-id <B-PEER-ID> --vault /vault/A
 ```
 
+To permanently remove a peer entry (as opposed to revoking it):
+
+```bash
+mdht collab peer remove --peer-id <id> --vault <path>
+```
+
 ## Health checks
 
 Run these checks in order when debugging replication:
@@ -103,6 +109,7 @@ Run these checks in order when debugging replication:
 8. `mdht collab sync health --vault <path>`
 9. `mdht collab metrics --vault <path>`
 10. `mdht collab activity tail --limit 100 --vault <path>`
+11. `mdht collab presence --vault <path>`
 
 Interpretation:
 
@@ -112,6 +119,9 @@ Interpretation:
 - `sync health`: high-level convergence state (`good|degraded|down`).
 - `metrics`: realtime counters and queue depths.
 - log tail: authentication, decode, and reconnect details.
+- `presence`: per-peer reachability, RTT, dial result, and traversal mode summary.
+
+Use `mdht collab presence tail --vault <path>` to stream presence-related events only. Use `mdht collab peer timeline --peer-id <id> --vault <path>` for presence history filtered to a specific peer.
 
 ## Incident playbooks
 

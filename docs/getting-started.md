@@ -58,6 +58,7 @@ Progress rule:
 
 - `ingest`: add file/url sources
 - `source`: list/show source metadata
+- `graph`: knowledge graph exploration (topics, neighbors, search, path)
 - `reader`: open content in markdown/pdf/external mode
 - `session`: start/end study blocks
 - `reindex`: rebuild projections from vault state
