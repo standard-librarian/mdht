@@ -16,14 +16,19 @@ type WorkspaceShowOutput struct {
 }
 
 type PeerOutput struct {
-	PeerID    string
-	Address   string
-	Label     string
-	State     string
-	FirstSeen time.Time
-	LastSeen  time.Time
-	AddedAt   time.Time
-	LastError string
+	PeerID         string
+	Address        string
+	Label          string
+	State          string
+	FirstSeen      time.Time
+	LastSeen       time.Time
+	AddedAt        time.Time
+	LastError      string
+	Reachability   string
+	LastDialAt     time.Time
+	LastDialResult string
+	RTTMS          int64
+	TraversalMode  string
 }
 
 type StatusOutput struct {
@@ -36,6 +41,9 @@ type StatusOutput struct {
 	NodeID            string
 	WorkspaceID       string
 	ListenAddrs       []string
+	Reachability      string
+	NATMode           string
+	Connectivity      string
 	MetricsAddress    string
 	Counters          ValidationCountersOutput
 }
@@ -56,6 +64,11 @@ type ValidationCountersOutput struct {
 	ReconcileSendErrors int64
 	ReconnectAttempts   int64
 	ReconnectSuccesses  int64
+	DialAttempts        int64
+	DialSuccesses       int64
+	DialFailures        int64
+	HolePunchAttempts   int64
+	HolePunchSuccesses  int64
 }
 
 type DoctorCheckOutput struct {
@@ -107,4 +120,34 @@ type MetricsOutput struct {
 	LastSyncAt       time.Time
 	CollectedAt      time.Time
 	Counters         ValidationCountersOutput
+}
+
+type NetStatusOutput struct {
+	Online       bool
+	Reachability string
+	NATMode      string
+	Connectivity string
+	ListenAddrs  []string
+	PeerCount    int
+	LastSyncAt   time.Time
+}
+
+type NetProbeOutput struct {
+	Reachability  string
+	NATMode       string
+	ListenAddrs   []string
+	DialableAddrs []string
+}
+
+type PeerLatencyOutput struct {
+	PeerID string
+	RTTMS  int64
+}
+
+type SyncHealthOutput struct {
+	State      string
+	Reason     string
+	LagSeconds int64
+	PendingOps int
+	LastSyncAt time.Time
 }

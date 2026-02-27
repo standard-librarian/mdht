@@ -589,7 +589,16 @@ func newCollabCmd(vaultPath *string) *cobra.Command {
 				return err
 			}
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "running=%t pid=%d socket=%s\n", status.Running, status.PID, status.SocketPath)
-			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "online=%t peers=%d pending_ops=%d workspace=%s node=%s\n", status.Status.Online, status.Status.PeerCount, status.Status.PendingOps, status.Status.WorkspaceID, status.Status.NodeID)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "online=%t peers=%d pending_ops=%d workspace=%s node=%s reachability=%s nat_mode=%s connectivity=%s\n",
+				status.Status.Online,
+				status.Status.PeerCount,
+				status.Status.PendingOps,
+				status.Status.WorkspaceID,
+				status.Status.NodeID,
+				status.Status.Reachability,
+				status.Status.NATMode,
+				status.Status.Connectivity,
+			)
 			if len(status.Status.ListenAddrs) > 0 {
 				for _, addr := range status.Status.ListenAddrs {
 					_, _ = fmt.Fprintln(cmd.OutOrStdout(), addr)
@@ -754,6 +763,27 @@ func newCollabCmd(vaultPath *string) *cobra.Command {
 	}
 	revokePeer.Flags().StringVar(&peerID, "peer-id", "", "peer id")
 	peer.AddCommand(revokePeer)
+	dialPeer := &cobra.Command{
+		Use:   "dial --peer-id <id>",
+		Short: "Dial a peer and update connectivity health",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if strings.TrimSpace(peerID) == "" {
+				return fmt.Errorf("--peer-id is required")
+			}
+			app, err := loadApp(*vaultPath)
+			if err != nil {
+				return err
+			}
+			out, err := app.CollabCLI.PeerDial(context.Background(), peerID)
+			if err != nil {
+				return err
+			}
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "peer dial: %s result=%s traversal=%s rtt_ms=%d reachability=%s\n", out.PeerID, out.LastDialResult, out.TraversalMode, out.RTTMS, out.Reachability)
+			return nil
+		},
+	}
+	dialPeer.Flags().StringVar(&peerID, "peer-id", "", "peer id")
+	peer.AddCommand(dialPeer)
 	removePeer := &cobra.Command{
 		Use:   "remove --peer-id <id>",
 		Short: "Remove a configured peer",
@@ -796,13 +826,52 @@ func newCollabCmd(vaultPath *string) *cobra.Command {
 				return nil
 			}
 			for _, item := range out {
-				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%s\t%s\n", item.PeerID, item.State, item.Label, item.Address)
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%s\t%s\treachability=%s\tdial=%s\ttraversal=%s\trtt_ms=%d\n",
+					item.PeerID,
+					item.State,
+					item.Label,
+					item.Address,
+					item.Reachability,
+					item.LastDialResult,
+					item.TraversalMode,
+					item.RTTMS,
+				)
 			}
 			return nil
 		},
 	}
 	peerList.Flags().BoolVar(&peerListJSON, "json", false, "output peers as JSON")
 	peer.AddCommand(peerList)
+	var peerLatencyJSON bool
+	peerLatency := &cobra.Command{
+		Use:   "latency",
+		Short: "Measure peer latency",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			app, err := loadApp(*vaultPath)
+			if err != nil {
+				return err
+			}
+			items, err := app.CollabCLI.PeerLatency(context.Background())
+			if err != nil {
+				return err
+			}
+			if len(items) == 0 {
+				_, _ = fmt.Fprintln(cmd.OutOrStdout(), "no peer latency data")
+				return nil
+			}
+			if peerLatencyJSON {
+				encoded, _ := json.Marshal(items)
+				_, _ = fmt.Fprintln(cmd.OutOrStdout(), string(encoded))
+				return nil
+			}
+			for _, item := range items {
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s\t%dms\n", item.PeerID, item.RTTMS)
+			}
+			return nil
+		},
+	}
+	peerLatency.Flags().BoolVar(&peerLatencyJSON, "json", false, "output peer latency as JSON")
+	peer.AddCommand(peerLatency)
 	collab.AddCommand(peer)
 
 	var statusJSON bool
@@ -823,26 +892,97 @@ func newCollabCmd(vaultPath *string) *cobra.Command {
 				_, _ = fmt.Fprintln(cmd.OutOrStdout(), string(encoded))
 				return nil
 			}
-			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "online=%t peers=%d approved_peers=%d pending_conflicts=%d pending_ops=%d workspace=%s node=%s\n", status.Online, status.PeerCount, status.ApprovedPeerCount, status.PendingConflicts, status.PendingOps, status.WorkspaceID, status.NodeID)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "online=%t peers=%d approved_peers=%d pending_conflicts=%d pending_ops=%d workspace=%s node=%s reachability=%s nat_mode=%s connectivity=%s\n",
+				status.Online,
+				status.PeerCount,
+				status.ApprovedPeerCount,
+				status.PendingConflicts,
+				status.PendingOps,
+				status.WorkspaceID,
+				status.NodeID,
+				status.Reachability,
+				status.NATMode,
+				status.Connectivity,
+			)
 			if !status.LastSyncAt.IsZero() {
 				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "last_sync=%s\n", status.LastSyncAt.Format(time.RFC3339))
 			}
 			if status.MetricsAddress != "" {
 				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "metrics=%s\n", status.MetricsAddress)
 			}
-			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "counters invalid_auth=%d workspace_mismatch=%d unauthenticated=%d decode_errors=%d reconnect_attempts=%d reconnect_successes=%d\n",
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "counters auth_invalid=%d auth_workspace_mismatch=%d auth_unauthenticated_peer=%d transport_decode_errors=%d transport_reconnect_attempts=%d transport_reconnect_successes=%d transport_dial_attempts=%d transport_dial_successes=%d transport_dial_failures=%d transport_hole_punch_attempts=%d transport_hole_punch_successes=%d\n",
 				status.Counters.InvalidAuthTag,
 				status.Counters.WorkspaceMismatch,
 				status.Counters.UnauthenticatedPeer,
 				status.Counters.DecodeErrors,
 				status.Counters.ReconnectAttempts,
 				status.Counters.ReconnectSuccesses,
+				status.Counters.DialAttempts,
+				status.Counters.DialSuccesses,
+				status.Counters.DialFailures,
+				status.Counters.HolePunchAttempts,
+				status.Counters.HolePunchSuccesses,
 			)
 			return nil
 		},
 	}
 	statusCmd.Flags().BoolVar(&statusJSON, "json", false, "output status as JSON")
 	collab.AddCommand(statusCmd)
+
+	var netStatusJSON bool
+	netCmd := &cobra.Command{Use: "net", Short: "Connectivity diagnostics"}
+	netStatus := &cobra.Command{
+		Use:   "status",
+		Short: "Show network/traversal status",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			app, err := loadApp(*vaultPath)
+			if err != nil {
+				return err
+			}
+			status, err := app.CollabCLI.NetStatus(context.Background())
+			if err != nil {
+				return err
+			}
+			if netStatusJSON {
+				encoded, _ := json.Marshal(status)
+				_, _ = fmt.Fprintln(cmd.OutOrStdout(), string(encoded))
+				return nil
+			}
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "online=%t reachability=%s nat_mode=%s connectivity=%s peers=%d\n", status.Online, status.Reachability, status.NATMode, status.Connectivity, status.PeerCount)
+			if !status.LastSyncAt.IsZero() {
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "last_sync=%s\n", status.LastSyncAt.Format(time.RFC3339))
+			}
+			for _, addr := range status.ListenAddrs {
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "listen=%s\n", addr)
+			}
+			return nil
+		},
+	}
+	netStatus.Flags().BoolVar(&netStatusJSON, "json", false, "output net status as JSON")
+	netProbe := &cobra.Command{
+		Use:   "probe",
+		Short: "Probe local network reachability and dialable addresses",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			app, err := loadApp(*vaultPath)
+			if err != nil {
+				return err
+			}
+			probe, err := app.CollabCLI.NetProbe(context.Background())
+			if err != nil {
+				return err
+			}
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "reachability=%s nat_mode=%s\n", probe.Reachability, probe.NATMode)
+			for _, addr := range probe.ListenAddrs {
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "listen=%s\n", addr)
+			}
+			for _, addr := range probe.DialableAddrs {
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "dialable=%s\n", addr)
+			}
+			return nil
+		},
+	}
+	netCmd.AddCommand(netStatus, netProbe)
+	collab.AddCommand(netCmd)
 
 	var activitySince time.Duration
 	var activityLimit int
@@ -949,6 +1089,33 @@ func newCollabCmd(vaultPath *string) *cobra.Command {
 		},
 	}
 	sync.AddCommand(syncNow)
+	var syncHealthJSON bool
+	syncHealth := &cobra.Command{
+		Use:   "health",
+		Short: "Show synchronization health state",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			app, err := loadApp(*vaultPath)
+			if err != nil {
+				return err
+			}
+			out, err := app.CollabCLI.SyncHealth(context.Background())
+			if err != nil {
+				return err
+			}
+			if syncHealthJSON {
+				encoded, _ := json.Marshal(out)
+				_, _ = fmt.Fprintln(cmd.OutOrStdout(), string(encoded))
+				return nil
+			}
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "state=%s reason=%s lag_seconds=%d pending_ops=%d\n", out.State, out.Reason, out.LagSeconds, out.PendingOps)
+			if !out.LastSyncAt.IsZero() {
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "last_sync=%s\n", out.LastSyncAt.Format(time.RFC3339))
+			}
+			return nil
+		},
+	}
+	syncHealth.Flags().BoolVar(&syncHealthJSON, "json", false, "output sync health as JSON")
+	sync.AddCommand(syncHealth)
 	collab.AddCommand(sync)
 
 	var snapshotOut string

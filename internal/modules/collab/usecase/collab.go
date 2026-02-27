@@ -21,14 +21,19 @@ type servicePort interface {
 	PeerAdd(ctx context.Context, addr, label string) (domain.Peer, error)
 	PeerApprove(ctx context.Context, peerID string) (domain.Peer, error)
 	PeerRevoke(ctx context.Context, peerID string) (domain.Peer, error)
+	PeerDial(ctx context.Context, peerID string) (domain.Peer, error)
+	PeerLatency(ctx context.Context) ([]collabout.PeerLatency, error)
 	PeerRemove(ctx context.Context, peerID string) error
 	PeerList(ctx context.Context) ([]domain.Peer, error)
 	Status(ctx context.Context) (collabout.DaemonStatus, error)
+	NetStatus(ctx context.Context) (collabout.NetStatus, error)
+	NetProbe(ctx context.Context) (collabout.NetProbe, error)
 	DaemonLogs(ctx context.Context, tail int) (string, error)
 	ActivityTail(ctx context.Context, query collabout.ActivityQuery) ([]domain.ActivityEvent, error)
 	ConflictsList(ctx context.Context, entityKey string) ([]domain.ConflictRecord, error)
 	ConflictResolve(ctx context.Context, conflictID string, strategy domain.ConflictStrategy) (domain.ConflictRecord, error)
 	SyncNow(ctx context.Context) (int, error)
+	SyncHealth(ctx context.Context) (collabout.SyncHealth, error)
 	SnapshotExport(ctx context.Context) (string, error)
 	Metrics(ctx context.Context) (collabout.MetricsSnapshot, error)
 }
@@ -118,6 +123,29 @@ func (i *Interactor) PeerRevoke(ctx context.Context, peerID string) (dto.PeerOut
 	return mapPeer(peer), nil
 }
 
+func (i *Interactor) PeerDial(ctx context.Context, peerID string) (dto.PeerOutput, error) {
+	peer, err := i.svc.PeerDial(ctx, peerID)
+	if err != nil {
+		return dto.PeerOutput{}, err
+	}
+	return mapPeer(peer), nil
+}
+
+func (i *Interactor) PeerLatency(ctx context.Context) ([]dto.PeerLatencyOutput, error) {
+	items, err := i.svc.PeerLatency(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]dto.PeerLatencyOutput, 0, len(items))
+	for _, item := range items {
+		out = append(out, dto.PeerLatencyOutput{
+			PeerID: item.PeerID,
+			RTTMS:  item.RTTMS,
+		})
+	}
+	return out, nil
+}
+
 func (i *Interactor) PeerRemove(ctx context.Context, peerID string) error {
 	return i.svc.PeerRemove(ctx, peerID)
 }
@@ -140,6 +168,35 @@ func (i *Interactor) Status(ctx context.Context) (dto.StatusOutput, error) {
 		return dto.StatusOutput{}, err
 	}
 	return mapStatus(status), nil
+}
+
+func (i *Interactor) NetStatus(ctx context.Context) (dto.NetStatusOutput, error) {
+	status, err := i.svc.NetStatus(ctx)
+	if err != nil {
+		return dto.NetStatusOutput{}, err
+	}
+	return dto.NetStatusOutput{
+		Online:       status.Online,
+		Reachability: string(status.Reachability),
+		NATMode:      status.NATMode,
+		Connectivity: string(status.Connectivity),
+		ListenAddrs:  status.ListenAddrs,
+		PeerCount:    status.PeerCount,
+		LastSyncAt:   status.LastSyncAt,
+	}, nil
+}
+
+func (i *Interactor) NetProbe(ctx context.Context) (dto.NetProbeOutput, error) {
+	probe, err := i.svc.NetProbe(ctx)
+	if err != nil {
+		return dto.NetProbeOutput{}, err
+	}
+	return dto.NetProbeOutput{
+		Reachability:  string(probe.Reachability),
+		NATMode:       probe.NATMode,
+		ListenAddrs:   probe.ListenAddrs,
+		DialableAddrs: probe.DialableAddrs,
+	}, nil
 }
 
 func (i *Interactor) DaemonLogs(ctx context.Context, tail int) (string, error) {
@@ -192,6 +249,20 @@ func (i *Interactor) SyncNow(ctx context.Context) (dto.ReconcileOutput, error) {
 	return dto.ReconcileOutput{Applied: applied}, nil
 }
 
+func (i *Interactor) SyncHealth(ctx context.Context) (dto.SyncHealthOutput, error) {
+	health, err := i.svc.SyncHealth(ctx)
+	if err != nil {
+		return dto.SyncHealthOutput{}, err
+	}
+	return dto.SyncHealthOutput{
+		State:      string(health.State),
+		Reason:     health.Reason,
+		LagSeconds: health.LagSeconds,
+		PendingOps: health.PendingOps,
+		LastSyncAt: health.LastSyncAt,
+	}, nil
+}
+
 func (i *Interactor) SnapshotExport(ctx context.Context) (dto.ExportStateOutput, error) {
 	payload, err := i.svc.SnapshotExport(ctx)
 	if err != nil {
@@ -222,6 +293,11 @@ func (i *Interactor) Metrics(ctx context.Context) (dto.MetricsOutput, error) {
 			ReconcileSendErrors: metrics.Counters.ReconcileSendErrors,
 			ReconnectAttempts:   metrics.Counters.ReconnectAttempts,
 			ReconnectSuccesses:  metrics.Counters.ReconnectSuccesses,
+			DialAttempts:        metrics.Counters.DialAttempts,
+			DialSuccesses:       metrics.Counters.DialSuccesses,
+			DialFailures:        metrics.Counters.DialFailures,
+			HolePunchAttempts:   metrics.Counters.HolePunchAttempts,
+			HolePunchSuccesses:  metrics.Counters.HolePunchSuccesses,
 		},
 	}, nil
 }
@@ -237,14 +313,19 @@ func mapWorkspace(workspace domain.Workspace) dto.WorkspaceOutput {
 
 func mapPeer(peer domain.Peer) dto.PeerOutput {
 	return dto.PeerOutput{
-		PeerID:    peer.PeerID,
-		Address:   peer.Address,
-		Label:     peer.Label,
-		State:     string(peer.State),
-		FirstSeen: peer.FirstSeen,
-		LastSeen:  peer.LastSeen,
-		AddedAt:   peer.AddedAt,
-		LastError: peer.LastError,
+		PeerID:         peer.PeerID,
+		Address:        peer.Address,
+		Label:          peer.Label,
+		State:          string(peer.State),
+		FirstSeen:      peer.FirstSeen,
+		LastSeen:       peer.LastSeen,
+		AddedAt:        peer.AddedAt,
+		LastError:      peer.LastError,
+		Reachability:   string(peer.Reachability),
+		LastDialAt:     peer.LastDialAt,
+		LastDialResult: string(peer.LastDialResult),
+		RTTMS:          peer.RTTMS,
+		TraversalMode:  string(peer.TraversalMode),
 	}
 }
 
@@ -259,6 +340,9 @@ func mapStatus(status collabout.DaemonStatus) dto.StatusOutput {
 		NodeID:            status.NodeID,
 		WorkspaceID:       status.WorkspaceID,
 		ListenAddrs:       status.ListenAddrs,
+		Reachability:      string(status.Reachability),
+		NATMode:           status.NATMode,
+		Connectivity:      string(status.Connectivity),
 		MetricsAddress:    status.MetricsAddress,
 		Counters: dto.ValidationCountersOutput{
 			InvalidAuthTag:      status.Counters.InvalidAuthTag,
@@ -269,6 +353,11 @@ func mapStatus(status collabout.DaemonStatus) dto.StatusOutput {
 			ReconcileSendErrors: status.Counters.ReconcileSendErrors,
 			ReconnectAttempts:   status.Counters.ReconnectAttempts,
 			ReconnectSuccesses:  status.Counters.ReconnectSuccesses,
+			DialAttempts:        status.Counters.DialAttempts,
+			DialSuccesses:       status.Counters.DialSuccesses,
+			DialFailures:        status.Counters.DialFailures,
+			HolePunchAttempts:   status.Counters.HolePunchAttempts,
+			HolePunchSuccesses:  status.Counters.HolePunchSuccesses,
 		},
 	}
 }

@@ -17,6 +17,7 @@ type PeerStore interface {
 	Add(ctx context.Context, addr, label string) (domain.Peer, error)
 	Approve(ctx context.Context, peerID string) (domain.Peer, error)
 	Revoke(ctx context.Context, peerID string) (domain.Peer, error)
+	Update(ctx context.Context, peer domain.Peer) (domain.Peer, error)
 	Remove(ctx context.Context, peerID string) error
 	List(ctx context.Context) ([]domain.Peer, error)
 }
@@ -64,6 +65,11 @@ type ValidationCounters struct {
 	ReconcileSendErrors int64
 	ReconnectAttempts   int64
 	ReconnectSuccesses  int64
+	DialAttempts        int64
+	DialSuccesses       int64
+	DialFailures        int64
+	HolePunchAttempts   int64
+	HolePunchSuccesses  int64
 }
 
 type RuntimeTransport interface {
@@ -74,16 +80,22 @@ type RuntimeTransport interface {
 	RevokePeer(ctx context.Context, peerID string) error
 	RemovePeer(ctx context.Context, peerID string) error
 	UpdateKeyRing(ctx context.Context, ring domain.KeyRing) error
+	Probe(ctx context.Context) (NetProbe, error)
+	DialPeer(ctx context.Context, peerID string) (domain.DialOutcome, error)
+	PeerLatency(ctx context.Context) ([]PeerLatency, error)
 	Status() NetworkStatus
 	Stop() error
 }
 
 type NetworkStatus struct {
-	Online      bool
-	PeerCount   int
-	LastSyncAt  time.Time
-	ListenAddrs []string
-	Counters    ValidationCounters
+	Online       bool
+	PeerCount    int
+	LastSyncAt   time.Time
+	ListenAddrs  []string
+	Reachability domain.ReachabilityState
+	NATMode      string
+	Connectivity domain.SyncHealthState
+	Counters     ValidationCounters
 }
 
 type DaemonStore interface {
@@ -114,6 +126,11 @@ type IPCClient interface {
 	ConflictsList(ctx context.Context, socketPath string, entityKey string) ([]domain.ConflictRecord, error)
 	ConflictResolve(ctx context.Context, socketPath, conflictID string, strategy domain.ConflictStrategy) (domain.ConflictRecord, error)
 	SyncNow(ctx context.Context, socketPath string) (int, error)
+	SyncHealth(ctx context.Context, socketPath string) (SyncHealth, error)
+	NetStatus(ctx context.Context, socketPath string) (NetStatus, error)
+	NetProbe(ctx context.Context, socketPath string) (NetProbe, error)
+	PeerDial(ctx context.Context, socketPath, peerID string) (domain.Peer, error)
+	PeerLatency(ctx context.Context, socketPath string) ([]PeerLatency, error)
 	SnapshotExport(ctx context.Context, socketPath string) (string, error)
 	Metrics(ctx context.Context, socketPath string) (MetricsSnapshot, error)
 	Stop(ctx context.Context, socketPath string) error
@@ -133,6 +150,11 @@ type IPCHandler interface {
 	ConflictsList(ctx context.Context, entityKey string) ([]domain.ConflictRecord, error)
 	ConflictResolve(ctx context.Context, conflictID string, strategy domain.ConflictStrategy) (domain.ConflictRecord, error)
 	SyncNow(ctx context.Context) (int, error)
+	SyncHealth(ctx context.Context) (SyncHealth, error)
+	NetStatus(ctx context.Context) (NetStatus, error)
+	NetProbe(ctx context.Context) (NetProbe, error)
+	PeerDial(ctx context.Context, peerID string) (domain.Peer, error)
+	PeerLatency(ctx context.Context) ([]PeerLatency, error)
 	SnapshotExport(ctx context.Context) (string, error)
 	Metrics(ctx context.Context) (MetricsSnapshot, error)
 	Stop(ctx context.Context) error
@@ -148,6 +170,9 @@ type DaemonStatus struct {
 	NodeID            string
 	WorkspaceID       string
 	ListenAddrs       []string
+	Reachability      domain.ReachabilityState
+	NATMode           string
+	Connectivity      domain.SyncHealthState
 	Counters          ValidationCounters
 	MetricsAddress    string
 }
@@ -189,4 +214,34 @@ type MetricsSnapshot struct {
 	LastSyncAt       time.Time          `json:"last_sync_at"`
 	Counters         ValidationCounters `json:"counters"`
 	CollectedAt      time.Time          `json:"collected_at"`
+}
+
+type NetStatus struct {
+	Online       bool                     `json:"online"`
+	Reachability domain.ReachabilityState `json:"reachability"`
+	NATMode      string                   `json:"nat_mode"`
+	Connectivity domain.SyncHealthState   `json:"connectivity"`
+	ListenAddrs  []string                 `json:"listen_addrs"`
+	PeerCount    int                      `json:"peer_count"`
+	LastSyncAt   time.Time                `json:"last_sync_at"`
+}
+
+type NetProbe struct {
+	Reachability  domain.ReachabilityState `json:"reachability"`
+	NATMode       string                   `json:"nat_mode"`
+	ListenAddrs   []string                 `json:"listen_addrs"`
+	DialableAddrs []string                 `json:"dialable_addrs"`
+}
+
+type PeerLatency struct {
+	PeerID string `json:"peer_id"`
+	RTTMS  int64  `json:"rtt_ms"`
+}
+
+type SyncHealth struct {
+	State      domain.SyncHealthState `json:"state"`
+	Reason     string                 `json:"reason"`
+	LagSeconds int64                  `json:"lag_seconds"`
+	PendingOps int                    `json:"pending_ops"`
+	LastSyncAt time.Time              `json:"last_sync_at"`
 }

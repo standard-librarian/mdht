@@ -8,13 +8,13 @@ For deep operational incidents, see the [operator runbook](runbooks/collab-opera
 
 - Topology: peer-to-peer, manual bootstrap peers.
 - Trust: shared workspace key + node identity.
-- Transport: direct routable peers (no relay/NAT traversal in this phase).
+- Transport: direct peers with NAT traversal attempts, no relay fallback.
 - Sync scope: mdht-managed content only.
 
 Not in scope for this beta:
 
 - full-vault unmanaged markdown sync
-- relay infrastructure or NAT traversal
+- relay infrastructure
 - plugin marketplace/distribution
 
 ## Single-node setup
@@ -25,6 +25,9 @@ mdht collab workspace init --name "team-alpha" --vault "$VAULT"
 mdht collab daemon start --vault "$VAULT"
 mdht collab daemon status --vault "$VAULT"
 mdht collab status --vault "$VAULT"
+mdht collab net status --vault "$VAULT"
+mdht collab net probe --vault "$VAULT"
+mdht collab sync health --vault "$VAULT"
 mdht collab metrics --vault "$VAULT"
 ```
 
@@ -64,18 +67,26 @@ Run in this order:
 2. `mdht collab daemon status --vault <path>`
 3. `mdht collab status --vault <path>`
 4. `mdht collab peer list --vault <path>`
-5. `mdht collab daemon logs --tail 200 --vault <path>`
-6. `mdht collab metrics --vault <path>`
-7. `mdht collab activity tail --limit 50 --vault <path>`
+5. `mdht collab net status --vault <path>`
+6. `mdht collab net probe --vault <path>`
+7. `mdht collab sync health --vault <path>`
+8. `mdht collab daemon logs --tail 200 --vault <path>`
+9. `mdht collab metrics --vault <path>`
+10. `mdht collab activity tail --limit 50 --vault <path>`
 
 Key status counters:
 
-- `invalid_auth`
-- `workspace_mismatch`
-- `unauthenticated`
-- `decode_errors`
-- `reconnect_attempts`
-- `reconnect_successes`
+- `auth_invalid`
+- `auth_workspace_mismatch`
+- `auth_unauthenticated_peer`
+- `transport_decode_errors`
+- `transport_reconnect_attempts`
+- `transport_reconnect_successes`
+- `transport_dial_attempts`
+- `transport_dial_successes`
+- `transport_dial_failures`
+- `transport_hole_punch_attempts`
+- `transport_hole_punch_successes`
 
 ## Safety boundary: unmanaged content
 

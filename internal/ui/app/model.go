@@ -45,11 +45,16 @@ type pluginPort interface {
 
 type collabPort interface {
 	Status(ctx context.Context) (collabdto.StatusOutput, error)
+	NetStatus(ctx context.Context) (collabdto.NetStatusOutput, error)
+	NetProbe(ctx context.Context) (collabdto.NetProbeOutput, error)
 	PeerList(ctx context.Context) ([]collabdto.PeerOutput, error)
+	PeerDial(ctx context.Context, peerID string) (collabdto.PeerOutput, error)
+	PeerLatency(ctx context.Context) ([]collabdto.PeerLatencyOutput, error)
 	ActivityTail(ctx context.Context, since time.Time, limit int) ([]collabdto.ActivityOutput, error)
 	ConflictsList(ctx context.Context, entityKey string) ([]collabdto.ConflictOutput, error)
 	ConflictResolve(ctx context.Context, conflictID, strategy string) (collabdto.ConflictOutput, error)
 	SyncNow(ctx context.Context) (collabdto.ReconcileOutput, error)
+	SyncHealth(ctx context.Context) (collabdto.SyncHealthOutput, error)
 }
 
 type sourcesLoadedMsg struct {
@@ -130,6 +135,11 @@ type collabConflictsMsg struct {
 type collabResolveMsg struct {
 	item collabdto.ConflictOutput
 	err  error
+}
+
+type collabSyncHealthMsg struct {
+	health collabdto.SyncHealthOutput
+	err    error
 }
 
 type Model struct {
@@ -345,6 +355,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.status = fmt.Sprintf("collab conflict resolved: %s", msg.item.ID)
 		return m, tea.Batch(m.loadCollabConflictsCmd(), m.loadCollabStatusCmd())
+	case collabSyncHealthMsg:
+		if msg.err != nil {
+			m.status = "collab sync health failed: " + msg.err.Error()
+			return m, nil
+		}
+		m.status = fmt.Sprintf("collab sync health: %s (%s)", msg.health.State, msg.health.Reason)
+		return m, nil
 	case tea.KeyMsg:
 		if m.showPalette {
 			return m.handlePaletteInput(msg)
@@ -382,7 +399,7 @@ func (m Model) View() string {
 	if !m.collabStatus.LastSyncAt.IsZero() {
 		lastSync = time.Since(m.collabStatus.LastSyncAt).Round(time.Second).String()
 	}
-	footer := "\n" + theme.Hot.Render("status: "+m.status) + "\n" + theme.Muted.Render(fmt.Sprintf("collab:%s peers:%d approved_peers:%d pending_conflicts:%d pending_ops:%d last_sync:%s", collabStatus, m.collabStatus.PeerCount, m.collabStatus.ApprovedPeerCount, m.collabStatus.PendingConflicts, m.collabStatus.PendingOps, lastSync)) + "\n" + theme.Muted.Render("keys: up/down select, enter open, s start session, : palette, q quit")
+	footer := "\n" + theme.Hot.Render("status: "+m.status) + "\n" + theme.Muted.Render(fmt.Sprintf("collab:%s peers:%d approved_peers:%d pending_conflicts:%d pending_ops:%d nat:%s connectivity:%s last_sync:%s", collabStatus, m.collabStatus.PeerCount, m.collabStatus.ApprovedPeerCount, m.collabStatus.PendingConflicts, m.collabStatus.PendingOps, m.collabStatus.NATMode, m.collabStatus.Connectivity, lastSync)) + "\n" + theme.Muted.Render("keys: up/down select, enter open, s start session, : palette, q quit")
 	body := strings.Join([]string{headline, sub, row}, "\n") + palette + footer
 	return theme.App.Render(body)
 }
@@ -587,6 +604,10 @@ func (m Model) executePalette(input string) (tea.Model, tea.Cmd) {
 		return m, m.resolveCollabConflictCmd(parts[1], parts[2])
 	case "collab:sync-now":
 		return m, m.syncCollabCmd()
+	case "collab:sync-health":
+		return m, m.syncHealthCmd()
+	case "collab:net-status":
+		return m, m.loadCollabStatusCmd()
 	default:
 		m.status = "unknown command"
 		return m, nil
@@ -714,6 +735,16 @@ func (m Model) syncCollabCmd() tea.Cmd {
 		}
 		out, err := m.collab.SyncNow(context.Background())
 		return collabSyncMsg{applied: out.Applied, err: err}
+	}
+}
+
+func (m Model) syncHealthCmd() tea.Cmd {
+	return func() tea.Msg {
+		if m.collab == nil {
+			return collabSyncHealthMsg{}
+		}
+		health, err := m.collab.SyncHealth(context.Background())
+		return collabSyncHealthMsg{health: health, err: err}
 	}
 }
 
@@ -864,7 +895,7 @@ func (m Model) renderContextPane(width, height int) string {
 			lines = append(lines, theme.Muted.Render("No peers loaded"))
 		}
 		for _, item := range m.collabPeers {
-			lines = append(lines, fmt.Sprintf("- %s (%s)", item.PeerID, item.State))
+			lines = append(lines, fmt.Sprintf("- %s (%s) reachability=%s dial=%s traversal=%s rtt=%dms", item.PeerID, item.State, item.Reachability, item.LastDialResult, item.TraversalMode, item.RTTMS))
 		}
 	}
 	return theme.Pane.Width(width).Height(height).Render(strings.Join(lines, "\n"))

@@ -56,6 +56,14 @@ func (h CLIHandler) PeerRevoke(ctx context.Context, peerID string) (dto.PeerOutp
 	return h.usecase.PeerRevoke(ctx, peerID)
 }
 
+func (h CLIHandler) PeerDial(ctx context.Context, peerID string) (dto.PeerOutput, error) {
+	return h.usecase.PeerDial(ctx, peerID)
+}
+
+func (h CLIHandler) PeerLatency(ctx context.Context) ([]dto.PeerLatencyOutput, error) {
+	return h.usecase.PeerLatency(ctx)
+}
+
 func (h CLIHandler) PeerRemove(ctx context.Context, peerID string) error {
 	return h.usecase.PeerRemove(ctx, peerID)
 }
@@ -66,6 +74,14 @@ func (h CLIHandler) PeerList(ctx context.Context) ([]dto.PeerOutput, error) {
 
 func (h CLIHandler) Status(ctx context.Context) (dto.StatusOutput, error) {
 	return h.usecase.Status(ctx)
+}
+
+func (h CLIHandler) NetStatus(ctx context.Context) (dto.NetStatusOutput, error) {
+	return h.usecase.NetStatus(ctx)
+}
+
+func (h CLIHandler) NetProbe(ctx context.Context) (dto.NetProbeOutput, error) {
+	return h.usecase.NetProbe(ctx)
 }
 
 func (h CLIHandler) DaemonLogs(ctx context.Context, tail int) (string, error) {
@@ -86,6 +102,10 @@ func (h CLIHandler) ConflictResolve(ctx context.Context, conflictID, strategy st
 
 func (h CLIHandler) SyncNow(ctx context.Context) (dto.ReconcileOutput, error) {
 	return h.usecase.SyncNow(ctx)
+}
+
+func (h CLIHandler) SyncHealth(ctx context.Context) (dto.SyncHealthOutput, error) {
+	return h.usecase.SyncHealth(ctx)
 }
 
 func (h CLIHandler) SnapshotExport(ctx context.Context) (dto.ExportStateOutput, error) {

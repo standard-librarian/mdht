@@ -54,6 +54,36 @@ func (h *fakeIPCHandler) ConflictResolve(context.Context, string, domain.Conflic
 	return domain.ConflictRecord{ID: "c1", Status: domain.ConflictStatusResolved, Strategy: "local"}, nil
 }
 func (h *fakeIPCHandler) SyncNow(context.Context) (int, error) { return 3, nil }
+func (h *fakeIPCHandler) SyncHealth(context.Context) (collabout.SyncHealth, error) {
+	return collabout.SyncHealth{State: domain.SyncHealthGood, Reason: "healthy", LagSeconds: 3, PendingOps: 2, LastSyncAt: time.Now().UTC()}, nil
+}
+func (h *fakeIPCHandler) NetStatus(context.Context) (collabout.NetStatus, error) {
+	return collabout.NetStatus{
+		Online:       true,
+		Reachability: domain.ReachabilityPublic,
+		NATMode:      "direct",
+		Connectivity: domain.SyncHealthGood,
+		ListenAddrs:  []string{"/ip4/127.0.0.1/tcp/4001/p2p/peer-a"},
+		PeerCount:    1,
+		LastSyncAt:   time.Now().UTC(),
+	}, nil
+}
+func (h *fakeIPCHandler) NetProbe(context.Context) (collabout.NetProbe, error) {
+	return collabout.NetProbe{
+		Reachability: domain.ReachabilityPublic,
+		NATMode:      "direct",
+		ListenAddrs:  []string{"/ip4/127.0.0.1/tcp/4001/p2p/peer-a"},
+		DialableAddrs: []string{
+			"/ip4/127.0.0.1/tcp/4001/p2p/peer-a",
+		},
+	}, nil
+}
+func (h *fakeIPCHandler) PeerDial(context.Context, string) (domain.Peer, error) {
+	return domain.Peer{PeerID: "peer-a", LastDialResult: domain.DialResultSuccess, RTTMS: 12, TraversalMode: domain.TraversalDirect}, nil
+}
+func (h *fakeIPCHandler) PeerLatency(context.Context) ([]collabout.PeerLatency, error) {
+	return []collabout.PeerLatency{{PeerID: "peer-a", RTTMS: 12}}, nil
+}
 func (h *fakeIPCHandler) SnapshotExport(context.Context) (string, error) {
 	return `{"ok":true}`, nil
 }
@@ -110,6 +140,21 @@ func TestJSONRPCServerClientContract(t *testing.T) {
 	}
 	if _, err := client.SyncNow(context.Background(), socketPath); err != nil {
 		t.Fatalf("sync now: %v", err)
+	}
+	if _, err := client.SyncHealth(context.Background(), socketPath); err != nil {
+		t.Fatalf("sync health: %v", err)
+	}
+	if _, err := client.NetStatus(context.Background(), socketPath); err != nil {
+		t.Fatalf("net status: %v", err)
+	}
+	if _, err := client.NetProbe(context.Background(), socketPath); err != nil {
+		t.Fatalf("net probe: %v", err)
+	}
+	if _, err := client.PeerDial(context.Background(), socketPath, "peer-a"); err != nil {
+		t.Fatalf("peer dial: %v", err)
+	}
+	if _, err := client.PeerLatency(context.Background(), socketPath); err != nil {
+		t.Fatalf("peer latency: %v", err)
 	}
 	if _, err := client.SnapshotExport(context.Background(), socketPath); err != nil {
 		t.Fatalf("snapshot export: %v", err)

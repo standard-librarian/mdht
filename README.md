@@ -78,7 +78,7 @@ mdht session end --outcome "finished chapter 1" --delta-progress 12.5 --vault "$
 - `tui`: primary terminal UI.
 - `ingest`, `source`, `reader`, `session`, `reindex`: core study loop.
 - `plugin`: plugin discovery, validation, and execution.
-- `collab`: daemon lifecycle, workspace/peer approval, activity/conflicts, sync, snapshot, metrics.
+- `collab`: daemon lifecycle, workspace/peer approval, activity/conflicts, sync, snapshot, metrics, and connectivity diagnostics (`net status|probe`, `peer dial|latency`, `sync health`).
 
 Use `mdht <group> --help` for full flags and examples.
 

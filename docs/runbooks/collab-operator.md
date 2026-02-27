@@ -1,4 +1,4 @@
-# Collaboration Operator Runbook (Phase 6)
+# Collaboration Operator Runbook (Phase 7)
 
 This runbook covers single-vault daemon operations, two-peer bootstrap, health checks, and incident recovery for `mdht` collaboration transport.
 
@@ -11,7 +11,8 @@ This runbook covers single-vault daemon operations, two-peer bootstrap, health c
 ## Prerequisites
 
 - Same `mdht` version on all peers.
-- Routable network paths between peers (no relay/NAT traversal in Phase 5).
+- Direct peer connectivity path; NAT traversal is attempted automatically.
+- No relay fallback in this phase.
 - Workspace key trust model accepted by operators.
 
 ## Single-node setup
@@ -33,6 +34,9 @@ mdht collab daemon start --vault /path/to/vault
 ```bash
 mdht collab daemon status --vault /path/to/vault
 mdht collab status --vault /path/to/vault
+mdht collab net status --vault /path/to/vault
+mdht collab net probe --vault /path/to/vault
+mdht collab sync health --vault /path/to/vault
 mdht collab metrics --vault /path/to/vault
 ```
 
@@ -94,13 +98,18 @@ Run these checks in order when debugging replication:
 3. `mdht collab status --vault <path>`
 4. `mdht collab peer list --vault <path>`
 5. `mdht collab daemon logs --tail 300 --vault <path>`
-6. `mdht collab metrics --vault <path>`
-7. `mdht collab activity tail --limit 100 --vault <path>`
+6. `mdht collab net status --vault <path>`
+7. `mdht collab net probe --vault <path>`
+8. `mdht collab sync health --vault <path>`
+9. `mdht collab metrics --vault <path>`
+10. `mdht collab activity tail --limit 100 --vault <path>`
 
 Interpretation:
 
 - `daemon status`: process/socket health.
 - `status`: runtime online/peer/pending ops and counters.
+- `net status/probe`: traversal mode, reachability, dialable addresses.
+- `sync health`: high-level convergence state (`good|degraded|down`).
 - `metrics`: realtime counters and queue depths.
 - log tail: authentication, decode, and reconnect details.
 
@@ -141,6 +150,31 @@ Actions:
 1. Verify peers are in intended workspace.
 2. Re-create workspace material only if organizationally approved.
 3. Re-add peer addresses and verify counters stop increasing.
+
+### NAT traversal or dial failures
+
+Symptoms:
+
+- `peer dial` returns failure repeatedly.
+- `net status` remains degraded/down.
+
+Actions:
+
+1. Run active probe:
+
+```bash
+mdht collab net probe --vault <path>
+```
+
+2. Force peer dial and latency checks:
+
+```bash
+mdht collab peer dial --peer-id <id> --vault <path>
+mdht collab peer latency --vault <path>
+```
+
+3. Confirm both peers approve each other and share workspace key lineage.
+4. If failure persists, collect `daemon logs` + `activity tail` and retry after endpoint/IP change.
 
 ### Split-brain suspicion
 

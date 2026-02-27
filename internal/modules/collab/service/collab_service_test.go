@@ -74,6 +74,15 @@ func (f *fakePeerStore) Revoke(_ context.Context, peerID string) (domain.Peer, e
 	}
 	return domain.Peer{}, domain.ErrPeerNotFound
 }
+func (f *fakePeerStore) Update(_ context.Context, peer domain.Peer) (domain.Peer, error) {
+	for i := range f.peers {
+		if f.peers[i].PeerID == peer.PeerID {
+			f.peers[i] = peer
+			return f.peers[i], nil
+		}
+	}
+	return domain.Peer{}, domain.ErrPeerNotFound
+}
 func (f *fakePeerStore) Remove(_ context.Context, peerID string) error {
 	out := make([]domain.Peer, 0, len(f.peers))
 	for _, peer := range f.peers {
@@ -142,6 +151,21 @@ func (fakeRuntimeTransport) RevokePeer(context.Context, string) error       { re
 func (fakeRuntimeTransport) RemovePeer(context.Context, string) error       { return nil }
 func (fakeRuntimeTransport) UpdateKeyRing(context.Context, domain.KeyRing) error {
 	return nil
+}
+func (fakeRuntimeTransport) Probe(context.Context) (collabout.NetProbe, error) {
+	return collabout.NetProbe{Reachability: domain.ReachabilityPublic, NATMode: "direct"}, nil
+}
+func (fakeRuntimeTransport) DialPeer(context.Context, string) (domain.DialOutcome, error) {
+	return domain.DialOutcome{
+		Result:        domain.DialResultSuccess,
+		TraversalMode: domain.TraversalDirect,
+		RTTMS:         10,
+		At:            time.Now().UTC(),
+		Reachability:  domain.ReachabilityPublic,
+	}, nil
+}
+func (fakeRuntimeTransport) PeerLatency(context.Context) ([]collabout.PeerLatency, error) {
+	return []collabout.PeerLatency{{PeerID: "peer-a", RTTMS: 10}}, nil
 }
 func (fakeRuntimeTransport) Status() collabout.NetworkStatus { return collabout.NetworkStatus{} }
 func (fakeRuntimeTransport) Stop() error                     { return nil }
@@ -227,6 +251,21 @@ func (fakeIPCClient) ConflictResolve(context.Context, string, string, domain.Con
 }
 func (fakeIPCClient) SyncNow(context.Context, string) (int, error) {
 	return 0, errors.New("not implemented")
+}
+func (fakeIPCClient) SyncHealth(context.Context, string) (collabout.SyncHealth, error) {
+	return collabout.SyncHealth{}, errors.New("not implemented")
+}
+func (fakeIPCClient) NetStatus(context.Context, string) (collabout.NetStatus, error) {
+	return collabout.NetStatus{}, errors.New("not implemented")
+}
+func (fakeIPCClient) NetProbe(context.Context, string) (collabout.NetProbe, error) {
+	return collabout.NetProbe{}, errors.New("not implemented")
+}
+func (fakeIPCClient) PeerDial(context.Context, string, string) (domain.Peer, error) {
+	return domain.Peer{}, errors.New("not implemented")
+}
+func (fakeIPCClient) PeerLatency(context.Context, string) ([]collabout.PeerLatency, error) {
+	return nil, errors.New("not implemented")
 }
 func (fakeIPCClient) SnapshotExport(context.Context, string) (string, error) {
 	return "", errors.New("not implemented")

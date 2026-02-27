@@ -95,6 +95,22 @@ type MetricsResp struct {
 	Metrics collabout.MetricsSnapshot
 }
 
+type NetStatusResp struct {
+	Status collabout.NetStatus
+}
+
+type NetProbeResp struct {
+	Probe collabout.NetProbe
+}
+
+type PeerLatencyResp struct {
+	Items []collabout.PeerLatency
+}
+
+type SyncHealthResp struct {
+	Health collabout.SyncHealth
+}
+
 type Empty struct{}
 
 func (s *rpcHandler) WorkspaceInit(req WorkspaceInitReq, resp *domain.Workspace) error {
@@ -212,6 +228,51 @@ func (s *rpcHandler) SyncNow(_ Empty, resp *SyncResp) error {
 		return toRPCError(err)
 	}
 	resp.Applied = applied
+	return nil
+}
+
+func (s *rpcHandler) SyncHealth(_ Empty, resp *SyncHealthResp) error {
+	health, err := s.h.SyncHealth(context.Background())
+	if err != nil {
+		return toRPCError(err)
+	}
+	resp.Health = health
+	return nil
+}
+
+func (s *rpcHandler) NetStatus(_ Empty, resp *NetStatusResp) error {
+	status, err := s.h.NetStatus(context.Background())
+	if err != nil {
+		return toRPCError(err)
+	}
+	resp.Status = status
+	return nil
+}
+
+func (s *rpcHandler) NetProbe(_ Empty, resp *NetProbeResp) error {
+	probe, err := s.h.NetProbe(context.Background())
+	if err != nil {
+		return toRPCError(err)
+	}
+	resp.Probe = probe
+	return nil
+}
+
+func (s *rpcHandler) PeerDial(req PeerReq, resp *domain.Peer) error {
+	peer, err := s.h.PeerDial(context.Background(), req.PeerID)
+	if err != nil {
+		return toRPCError(err)
+	}
+	*resp = peer
+	return nil
+}
+
+func (s *rpcHandler) PeerLatency(_ Empty, resp *PeerLatencyResp) error {
+	items, err := s.h.PeerLatency(context.Background())
+	if err != nil {
+		return toRPCError(err)
+	}
+	resp.Items = items
 	return nil
 }
 
@@ -453,6 +514,71 @@ func (c *JSONRPCClient) SyncNow(ctx context.Context, socketPath string) (int, er
 		return 0, err
 	}
 	return resp.Applied, nil
+}
+
+func (c *JSONRPCClient) SyncHealth(ctx context.Context, socketPath string) (collabout.SyncHealth, error) {
+	client, err := dialClient(ctx, socketPath)
+	if err != nil {
+		return collabout.SyncHealth{}, err
+	}
+	defer client.Close()
+	resp := SyncHealthResp{}
+	if err := client.Call("CollabV2.SyncHealth", Empty{}, &resp); err != nil {
+		return collabout.SyncHealth{}, err
+	}
+	return resp.Health, nil
+}
+
+func (c *JSONRPCClient) NetStatus(ctx context.Context, socketPath string) (collabout.NetStatus, error) {
+	client, err := dialClient(ctx, socketPath)
+	if err != nil {
+		return collabout.NetStatus{}, err
+	}
+	defer client.Close()
+	resp := NetStatusResp{}
+	if err := client.Call("CollabV2.NetStatus", Empty{}, &resp); err != nil {
+		return collabout.NetStatus{}, err
+	}
+	return resp.Status, nil
+}
+
+func (c *JSONRPCClient) NetProbe(ctx context.Context, socketPath string) (collabout.NetProbe, error) {
+	client, err := dialClient(ctx, socketPath)
+	if err != nil {
+		return collabout.NetProbe{}, err
+	}
+	defer client.Close()
+	resp := NetProbeResp{}
+	if err := client.Call("CollabV2.NetProbe", Empty{}, &resp); err != nil {
+		return collabout.NetProbe{}, err
+	}
+	return resp.Probe, nil
+}
+
+func (c *JSONRPCClient) PeerDial(ctx context.Context, socketPath, peerID string) (domain.Peer, error) {
+	client, err := dialClient(ctx, socketPath)
+	if err != nil {
+		return domain.Peer{}, err
+	}
+	defer client.Close()
+	resp := domain.Peer{}
+	if err := client.Call("CollabV2.PeerDial", PeerReq{PeerID: peerID}, &resp); err != nil {
+		return domain.Peer{}, err
+	}
+	return resp, nil
+}
+
+func (c *JSONRPCClient) PeerLatency(ctx context.Context, socketPath string) ([]collabout.PeerLatency, error) {
+	client, err := dialClient(ctx, socketPath)
+	if err != nil {
+		return nil, err
+	}
+	defer client.Close()
+	resp := PeerLatencyResp{}
+	if err := client.Call("CollabV2.PeerLatency", Empty{}, &resp); err != nil {
+		return nil, err
+	}
+	return resp.Items, nil
 }
 
 func (c *JSONRPCClient) SnapshotExport(ctx context.Context, socketPath string) (string, error) {

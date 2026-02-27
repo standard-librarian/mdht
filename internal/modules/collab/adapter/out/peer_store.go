@@ -47,6 +47,15 @@ func (s *FilePeerStore) Add(ctx context.Context, addr, label string) (domain.Pee
 		peers[i].Address = addr
 		peers[i].Label = label
 		peers[i].LastSeen = time.Now().UTC()
+		if peers[i].Reachability == "" {
+			peers[i].Reachability = domain.ReachabilityUnknown
+		}
+		if peers[i].TraversalMode == "" {
+			peers[i].TraversalMode = domain.TraversalDirect
+		}
+		if peers[i].LastDialResult == "" {
+			peers[i].LastDialResult = domain.DialResultUnknown
+		}
 		if err := s.write(peers); err != nil {
 			return domain.Peer{}, err
 		}
@@ -54,13 +63,16 @@ func (s *FilePeerStore) Add(ctx context.Context, addr, label string) (domain.Pee
 	}
 	now := time.Now().UTC()
 	peer := domain.Peer{
-		PeerID:    peerID,
-		Address:   addr,
-		Label:     label,
-		State:     domain.PeerStatePending,
-		FirstSeen: now,
-		LastSeen:  now,
-		AddedAt:   now,
+		PeerID:         peerID,
+		Address:        addr,
+		Label:          label,
+		State:          domain.PeerStatePending,
+		FirstSeen:      now,
+		LastSeen:       now,
+		AddedAt:        now,
+		Reachability:   domain.ReachabilityUnknown,
+		LastDialResult: domain.DialResultUnknown,
+		TraversalMode:  domain.TraversalDirect,
 	}
 	peers = append(peers, peer)
 	if err := s.write(peers); err != nil {
@@ -98,6 +110,57 @@ func (s *FilePeerStore) Remove(ctx context.Context, peerID string) error {
 	return s.write(filtered)
 }
 
+func (s *FilePeerStore) Update(ctx context.Context, peer domain.Peer) (domain.Peer, error) {
+	_ = ctx
+	peers, err := s.List(ctx)
+	if err != nil {
+		return domain.Peer{}, err
+	}
+	for i := range peers {
+		if peers[i].PeerID != peer.PeerID {
+			continue
+		}
+		if peer.Address != "" {
+			peers[i].Address = peer.Address
+		}
+		if peer.Label != "" {
+			peers[i].Label = peer.Label
+		}
+		if peer.State != "" {
+			peers[i].State = peer.State
+		}
+		if !peer.FirstSeen.IsZero() {
+			peers[i].FirstSeen = peer.FirstSeen
+		}
+		if !peer.LastSeen.IsZero() {
+			peers[i].LastSeen = peer.LastSeen
+		}
+		if !peer.LastDialAt.IsZero() {
+			peers[i].LastDialAt = peer.LastDialAt
+		}
+		if peer.LastDialResult != "" {
+			peers[i].LastDialResult = peer.LastDialResult
+		}
+		if peer.RTTMS > 0 {
+			peers[i].RTTMS = peer.RTTMS
+		}
+		if peer.TraversalMode != "" {
+			peers[i].TraversalMode = peer.TraversalMode
+		}
+		if peer.Reachability != "" {
+			peers[i].Reachability = peer.Reachability
+		}
+		if peer.LastError != "" {
+			peers[i].LastError = peer.LastError
+		}
+		if err := s.write(peers); err != nil {
+			return domain.Peer{}, err
+		}
+		return peers[i], nil
+	}
+	return domain.Peer{}, domain.ErrPeerNotFound
+}
+
 func (s *FilePeerStore) List(_ context.Context) ([]domain.Peer, error) {
 	raw, err := os.ReadFile(s.path)
 	if err != nil {
@@ -116,6 +179,15 @@ func (s *FilePeerStore) List(_ context.Context) ([]domain.Peer, error) {
 	for i := range peers {
 		if peers[i].State == "" {
 			peers[i].State = domain.PeerStatePending
+		}
+		if peers[i].Reachability == "" {
+			peers[i].Reachability = domain.ReachabilityUnknown
+		}
+		if peers[i].TraversalMode == "" {
+			peers[i].TraversalMode = domain.TraversalDirect
+		}
+		if peers[i].LastDialResult == "" {
+			peers[i].LastDialResult = domain.DialResultUnknown
 		}
 	}
 	sort.Slice(peers, func(i, j int) bool {

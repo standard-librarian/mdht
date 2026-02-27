@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"mdht/internal/modules/collab/domain"
 	collabout "mdht/internal/modules/collab/port/out"
@@ -21,6 +22,18 @@ type FileOpLogStore struct {
 type FileSnapshotStore struct {
 	path string
 	mu   sync.Mutex
+}
+
+type snapshotMetadata struct {
+	Connectivity domain.SyncHealthState `json:"connectivity"`
+	LastSyncAt   int64                  `json:"last_sync_unix,omitempty"`
+	PendingOps   int                    `json:"pending_ops"`
+	CapturedAt   int64                  `json:"captured_at_unix"`
+}
+
+type snapshotFile struct {
+	State    domain.CRDTState `json:"state"`
+	Metadata snapshotMetadata `json:"metadata"`
 }
 
 func NewFileOpLogStore(vaultPath string) collabout.OpLogStore {
@@ -96,6 +109,23 @@ func (s *FileSnapshotStore) Load(_ context.Context) (domain.CRDTState, error) {
 	if len(raw) == 0 {
 		return domain.NewCRDTState(), nil
 	}
+	// v2 snapshot shape stores state under `state` with diagnostic metadata.
+	wrapped := snapshotFile{}
+	if err := json.Unmarshal(raw, &wrapped); err == nil && (wrapped.State.Entities != nil || wrapped.State.AppliedOps != nil || wrapped.State.SchemaVersion != 0) {
+		state := wrapped.State
+		if state.Entities == nil {
+			state.Entities = map[string]domain.EntityState{}
+		}
+		if state.AppliedOps == nil {
+			state.AppliedOps = map[string]struct{}{}
+		}
+		if state.SchemaVersion == 0 {
+			state.SchemaVersion = domain.SchemaVersionV2
+		}
+		return state, nil
+	}
+
+	// Backward compatibility with older snapshot shape (raw CRDT state JSON).
 	state := domain.NewCRDTState()
 	if err := json.Unmarshal(raw, &state); err != nil {
 		return domain.CRDTState{}, fmt.Errorf("decode snapshot: %w", err)
@@ -118,7 +148,19 @@ func (s *FileSnapshotStore) Save(_ context.Context, state domain.CRDTState) erro
 	if err := os.MkdirAll(filepath.Dir(s.path), 0o755); err != nil {
 		return fmt.Errorf("create snapshot dir: %w", err)
 	}
-	payload, err := json.MarshalIndent(state, "", "  ")
+	connectivity := domain.SyncHealthGood
+	if state.PendingOps > 0 {
+		connectivity = domain.SyncHealthDegraded
+	}
+	payload, err := json.MarshalIndent(snapshotFile{
+		State: state,
+		Metadata: snapshotMetadata{
+			Connectivity: connectivity,
+			LastSyncAt:   state.LastSyncAt.Unix(),
+			PendingOps:   state.PendingOps,
+			CapturedAt:   time.Now().UTC().Unix(),
+		},
+	}, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encode snapshot: %w", err)
 	}

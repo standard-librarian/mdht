@@ -143,14 +143,19 @@ type NodeIdentity struct {
 }
 
 type Peer struct {
-	PeerID    string    `json:"peer_id"`
-	Address   string    `json:"address"`
-	Label     string    `json:"label,omitempty"`
-	State     PeerState `json:"state"`
-	FirstSeen time.Time `json:"first_seen"`
-	LastSeen  time.Time `json:"last_seen"`
-	AddedAt   time.Time `json:"added_at"`
-	LastError string    `json:"last_error,omitempty"`
+	PeerID         string            `json:"peer_id"`
+	Address        string            `json:"address"`
+	Label          string            `json:"label,omitempty"`
+	State          PeerState         `json:"state"`
+	FirstSeen      time.Time         `json:"first_seen"`
+	LastSeen       time.Time         `json:"last_seen"`
+	AddedAt        time.Time         `json:"added_at"`
+	LastError      string            `json:"last_error,omitempty"`
+	Reachability   ReachabilityState `json:"reachability,omitempty"`
+	LastDialAt     time.Time         `json:"last_dial_at,omitempty"`
+	LastDialResult DialResult        `json:"last_dial_result,omitempty"`
+	RTTMS          int64             `json:"rtt_ms,omitempty"`
+	TraversalMode  TraversalMode     `json:"traversal_mode,omitempty"`
 }
 
 type PeerState string
@@ -164,6 +169,48 @@ const (
 func (p Peer) IsApproved() bool {
 	return p.State == PeerStateApproved
 }
+
+type ReachabilityState string
+
+const (
+	ReachabilityUnknown ReachabilityState = "unknown"
+	ReachabilityPublic  ReachabilityState = "public"
+	ReachabilityPrivate ReachabilityState = "private"
+)
+
+type TraversalMode string
+
+const (
+	TraversalDirect       TraversalMode = "direct"
+	TraversalNATTraversed TraversalMode = "nat_traversed"
+)
+
+type DialResult string
+
+const (
+	DialResultUnknown     DialResult = "unknown"
+	DialResultSuccess     DialResult = "success"
+	DialResultFailed      DialResult = "failed"
+	DialResultAuthFailed  DialResult = "auth_failed"
+	DialResultUnreachable DialResult = "unreachable"
+)
+
+type DialOutcome struct {
+	Result        DialResult        `json:"result"`
+	TraversalMode TraversalMode     `json:"traversal_mode"`
+	RTTMS         int64             `json:"rtt_ms"`
+	Error         string            `json:"error,omitempty"`
+	At            time.Time         `json:"at"`
+	Reachability  ReachabilityState `json:"reachability,omitempty"`
+}
+
+type SyncHealthState string
+
+const (
+	SyncHealthGood     SyncHealthState = "good"
+	SyncHealthDegraded SyncHealthState = "degraded"
+	SyncHealthDown     SyncHealthState = "down"
+)
 
 type KeyRecord struct {
 	ID        string    `json:"id"`
@@ -193,13 +240,18 @@ func (k KeyRing) ResolveKey(keyID string, now time.Time) ([]byte, error) {
 type ActivityEventType string
 
 const (
-	ActivityPeerConnected   ActivityEventType = "peer_connected"
-	ActivityPeerRejected    ActivityEventType = "peer_rejected"
-	ActivitySyncApplied     ActivityEventType = "sync_applied"
-	ActivityConflictCreated ActivityEventType = "conflict_created"
-	ActivityConflictSolved  ActivityEventType = "conflict_resolved"
-	ActivityKeyRotated      ActivityEventType = "key_rotated"
-	ActivityMigration       ActivityEventType = "migration"
+	ActivityPeerConnected    ActivityEventType = "peer_connected"
+	ActivityPeerRejected     ActivityEventType = "peer_rejected"
+	ActivitySyncApplied      ActivityEventType = "sync_applied"
+	ActivityConflictCreated  ActivityEventType = "conflict_created"
+	ActivityConflictSolved   ActivityEventType = "conflict_resolved"
+	ActivityKeyRotated       ActivityEventType = "key_rotated"
+	ActivityMigration        ActivityEventType = "migration"
+	ActivityDialStart        ActivityEventType = "dial_start"
+	ActivityDialSuccess      ActivityEventType = "dial_success"
+	ActivityDialFail         ActivityEventType = "dial_fail"
+	ActivityHolePunchAttempt ActivityEventType = "hole_punch_attempt"
+	ActivityHolePunchResult  ActivityEventType = "hole_punch_result"
 )
 
 type ActivityEvent struct {

@@ -27,6 +27,10 @@ const (
 	reconcileInterval   = 15 * time.Second
 	daemonStartTimeout  = 5 * time.Second
 	defaultLogTailLines = 200
+	syncLagDegraded     = 2 * time.Minute
+	syncLagDown         = 10 * time.Minute
+	pendingOpsDegraded  = 10
+	pendingOpsDown      = 100
 )
 
 type runtimeState struct {
@@ -420,6 +424,113 @@ func (s *CollabService) PeerRevoke(ctx context.Context, peerID string) (domain.P
 	return peer, nil
 }
 
+func (s *CollabService) PeerDial(ctx context.Context, peerID string) (domain.Peer, error) {
+	if strings.TrimSpace(peerID) == "" {
+		return domain.Peer{}, domain.ErrPeerNotFound
+	}
+	s.mu.RLock()
+	rt := s.runtime
+	s.mu.RUnlock()
+	if rt == nil {
+		if s.ipcClient != nil && socketReachable(s.daemon.SocketPath()) {
+			return s.ipcClient.PeerDial(ctx, s.daemon.SocketPath(), peerID)
+		}
+		return domain.Peer{}, domain.ErrDaemonNotRunning
+	}
+	peers, err := s.peers.List(ctx)
+	if err != nil {
+		return domain.Peer{}, err
+	}
+	var selected domain.Peer
+	found := false
+	for _, item := range peers {
+		if item.PeerID == peerID {
+			selected = item
+			found = true
+			break
+		}
+	}
+	if !found {
+		return domain.Peer{}, domain.ErrPeerNotFound
+	}
+	outcome, err := rt.transport.DialPeer(ctx, peerID)
+	selected.LastDialAt = time.Now().UTC()
+	selected.LastDialResult = outcome.Result
+	selected.RTTMS = outcome.RTTMS
+	if outcome.TraversalMode != "" {
+		selected.TraversalMode = outcome.TraversalMode
+	}
+	if outcome.Reachability != "" {
+		selected.Reachability = outcome.Reachability
+	}
+	if err != nil {
+		selected.LastError = err.Error()
+		_, _ = s.peers.Update(ctx, selected)
+		_ = s.appendActivity(ctx, domain.ActivityEvent{
+			Type:    domain.ActivityDialFail,
+			Message: "peer dial failed",
+			Fields: map[string]string{
+				"peer_id": peerID,
+				"error":   err.Error(),
+			},
+		})
+		return selected, err
+	}
+	selected.LastError = ""
+	updated, updateErr := s.peers.Update(ctx, selected)
+	if updateErr == nil {
+		selected = updated
+	}
+	_ = s.appendActivity(ctx, domain.ActivityEvent{
+		Type:    domain.ActivityDialSuccess,
+		Message: "peer dial succeeded",
+		Fields: map[string]string{
+			"peer_id":        peerID,
+			"traversal_mode": string(selected.TraversalMode),
+			"rtt_ms":         fmt.Sprintf("%d", selected.RTTMS),
+		},
+	})
+	return selected, nil
+}
+
+func (s *CollabService) PeerLatency(ctx context.Context) ([]collabout.PeerLatency, error) {
+	s.mu.RLock()
+	rt := s.runtime
+	s.mu.RUnlock()
+	if rt == nil {
+		if s.ipcClient != nil && socketReachable(s.daemon.SocketPath()) {
+			return s.ipcClient.PeerLatency(ctx, s.daemon.SocketPath())
+		}
+		return nil, domain.ErrDaemonNotRunning
+	}
+	latencies, err := rt.transport.PeerLatency(ctx)
+	if err != nil {
+		return nil, err
+	}
+	peers, _ := s.peers.List(ctx)
+	byID := make(map[string]domain.Peer, len(peers))
+	for _, item := range peers {
+		byID[item.PeerID] = item
+	}
+	for _, item := range latencies {
+		peer, ok := byID[item.PeerID]
+		if !ok {
+			continue
+		}
+		peer.RTTMS = item.RTTMS
+		peer.LastDialAt = time.Now().UTC()
+		peer.LastDialResult = domain.DialResultSuccess
+		if peer.TraversalMode == "" {
+			peer.TraversalMode = domain.TraversalDirect
+		}
+		if peer.Reachability == "" {
+			peer.Reachability = domain.ReachabilityPublic
+		}
+		_, _ = s.peers.Update(ctx, peer)
+	}
+	return latencies, nil
+}
+
 func (s *CollabService) PeerRemove(ctx context.Context, peerID string) error {
 	if err := s.peers.Remove(ctx, peerID); err != nil {
 		return err
@@ -461,6 +572,9 @@ func (s *CollabService) Status(ctx context.Context) (collabout.DaemonStatus, err
 			NodeID:            rt.node.NodeID,
 			WorkspaceID:       rt.workspace.ID,
 			ListenAddrs:       status.ListenAddrs,
+			Reachability:      status.Reachability,
+			NATMode:           status.NATMode,
+			Connectivity:      status.Connectivity,
 			Counters:          status.Counters,
 			MetricsAddress:    rt.metricsAddr,
 		}, nil
@@ -504,6 +618,54 @@ func (s *CollabService) Status(ctx context.Context) (collabout.DaemonStatus, err
 		LastSyncAt:        state.LastSyncAt,
 		NodeID:            node.NodeID,
 		WorkspaceID:       workspace.ID,
+		Reachability:      domain.ReachabilityUnknown,
+		NATMode:           "direct",
+		Connectivity:      domain.SyncHealthDown,
+	}, nil
+}
+
+func (s *CollabService) NetStatus(ctx context.Context) (collabout.NetStatus, error) {
+	status, err := s.Status(ctx)
+	if err != nil {
+		return collabout.NetStatus{}, err
+	}
+	return collabout.NetStatus{
+		Online:       status.Online,
+		Reachability: status.Reachability,
+		NATMode:      status.NATMode,
+		Connectivity: status.Connectivity,
+		ListenAddrs:  status.ListenAddrs,
+		PeerCount:    status.PeerCount,
+		LastSyncAt:   status.LastSyncAt,
+	}, nil
+}
+
+func (s *CollabService) NetProbe(ctx context.Context) (collabout.NetProbe, error) {
+	s.mu.RLock()
+	rt := s.runtime
+	s.mu.RUnlock()
+	if rt != nil && rt.transport != nil {
+		return rt.transport.Probe(ctx)
+	}
+	if s.ipcClient != nil && socketReachable(s.daemon.SocketPath()) {
+		return s.ipcClient.NetProbe(ctx, s.daemon.SocketPath())
+	}
+	status, err := s.Status(ctx)
+	if err != nil {
+		return collabout.NetProbe{}, err
+	}
+	dialable := make([]string, 0, len(status.ListenAddrs))
+	for _, addr := range status.ListenAddrs {
+		if strings.Contains(addr, "/ip4/0.0.0.0/") || strings.Contains(addr, "/ip6/::/") {
+			continue
+		}
+		dialable = append(dialable, addr)
+	}
+	return collabout.NetProbe{
+		Reachability:  status.Reachability,
+		NATMode:       status.NATMode,
+		ListenAddrs:   status.ListenAddrs,
+		DialableAddrs: dialable,
 	}, nil
 }
 
@@ -689,6 +851,51 @@ func (s *CollabService) SyncNow(ctx context.Context) (int, error) {
 		return 0, domain.ErrDaemonNotRunning
 	}
 	return s.reconcileInProcess(ctx, rt)
+}
+
+func (s *CollabService) SyncHealth(ctx context.Context) (collabout.SyncHealth, error) {
+	s.mu.RLock()
+	rt := s.runtime
+	s.mu.RUnlock()
+	if rt == nil {
+		if s.ipcClient != nil && socketReachable(s.daemon.SocketPath()) {
+			return s.ipcClient.SyncHealth(ctx, s.daemon.SocketPath())
+		}
+		return collabout.SyncHealth{
+			State:  domain.SyncHealthDown,
+			Reason: "daemon offline",
+		}, nil
+	}
+	lag := int64(0)
+	if !rt.status.LastSyncAt.IsZero() {
+		lag = int64(time.Since(rt.status.LastSyncAt).Seconds())
+	}
+	health := collabout.SyncHealth{
+		State:      domain.SyncHealthGood,
+		Reason:     "healthy",
+		LagSeconds: lag,
+		PendingOps: rt.state.PendingOps,
+		LastSyncAt: rt.status.LastSyncAt,
+	}
+	if !rt.status.Online {
+		health.State = domain.SyncHealthDown
+		health.Reason = "network offline"
+		return health, nil
+	}
+	if rt.state.PendingOps >= pendingOpsDown || (!rt.status.LastSyncAt.IsZero() && time.Since(rt.status.LastSyncAt) >= syncLagDown) {
+		health.State = domain.SyncHealthDown
+		health.Reason = "sync lag too high"
+		return health, nil
+	}
+	if rt.state.PendingOps >= pendingOpsDegraded || (!rt.status.LastSyncAt.IsZero() && time.Since(rt.status.LastSyncAt) >= syncLagDegraded) {
+		health.State = domain.SyncHealthDegraded
+		health.Reason = "sync degraded"
+	}
+	if rt.status.Counters.ReconnectAttempts > rt.status.Counters.ReconnectSuccesses+3 {
+		health.State = domain.SyncHealthDegraded
+		health.Reason = "frequent reconnect failures"
+	}
+	return health, nil
 }
 
 func (s *CollabService) SnapshotExport(ctx context.Context) (string, error) {

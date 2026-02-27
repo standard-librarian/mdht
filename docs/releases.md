@@ -64,6 +64,26 @@ Recommended post-upgrade checks:
 3. `mdht collab peer list --vault <path>`
 4. `mdht collab sync now --vault <path>`
 
+## Phase 7 connectivity notes
+
+Phase 7 adds direct-peer NAT traversal attempts and connectivity diagnostics.
+
+New commands:
+
+1. `mdht collab net status --vault <path>`
+2. `mdht collab net probe --vault <path>`
+3. `mdht collab peer dial --peer-id <id> --vault <path>`
+4. `mdht collab peer latency --vault <path> [--json]`
+5. `mdht collab sync health --vault <path> [--json]`
+
+Recommended post-upgrade checks:
+
+1. `mdht collab daemon status --vault <path>`
+2. `mdht collab net status --vault <path>`
+3. `mdht collab net probe --vault <path>`
+4. `mdht collab peer list --vault <path>`
+5. `mdht collab sync health --vault <path>`
+
 ## Compatibility policy in beta
 
 - CLI and docs may evolve between beta tags.

@@ -75,6 +75,26 @@ func (f fakeService) PeerRevoke(context.Context, string) (domain.Peer, error) {
 	}
 	return domain.Peer{PeerID: "peer-a", State: domain.PeerStateRevoked}, nil
 }
+func (f fakeService) PeerDial(context.Context, string) (domain.Peer, error) {
+	if f.err != nil {
+		return domain.Peer{}, f.err
+	}
+	return domain.Peer{
+		PeerID:         "peer-a",
+		State:          domain.PeerStateApproved,
+		LastDialResult: domain.DialResultSuccess,
+		RTTMS:          12,
+		TraversalMode:  domain.TraversalDirect,
+		Reachability:   domain.ReachabilityPublic,
+		LastDialAt:     time.Now().UTC(),
+	}, nil
+}
+func (f fakeService) PeerLatency(context.Context) ([]collabout.PeerLatency, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return []collabout.PeerLatency{{PeerID: "peer-a", RTTMS: 12}}, nil
+}
 func (f fakeService) PeerRemove(context.Context, string) error { return f.err }
 func (f fakeService) PeerList(context.Context) ([]domain.Peer, error) {
 	if f.err != nil {
@@ -86,7 +106,45 @@ func (f fakeService) Status(context.Context) (collabout.DaemonStatus, error) {
 	if f.err != nil {
 		return collabout.DaemonStatus{}, f.err
 	}
-	return collabout.DaemonStatus{Online: true, PeerCount: 1, ApprovedPeerCount: 1, PendingConflicts: 0, PendingOps: 2, NodeID: "node-a", WorkspaceID: "ws-a"}, nil
+	return collabout.DaemonStatus{
+		Online:            true,
+		PeerCount:         1,
+		ApprovedPeerCount: 1,
+		PendingConflicts:  0,
+		PendingOps:        2,
+		NodeID:            "node-a",
+		WorkspaceID:       "ws-a",
+		Reachability:      domain.ReachabilityPublic,
+		NATMode:           "direct",
+		Connectivity:      domain.SyncHealthGood,
+	}, nil
+}
+func (f fakeService) NetStatus(context.Context) (collabout.NetStatus, error) {
+	if f.err != nil {
+		return collabout.NetStatus{}, f.err
+	}
+	return collabout.NetStatus{
+		Online:       true,
+		Reachability: domain.ReachabilityPublic,
+		NATMode:      "direct",
+		Connectivity: domain.SyncHealthGood,
+		ListenAddrs:  []string{"/ip4/127.0.0.1/tcp/4001/p2p/peer-a"},
+		PeerCount:    1,
+		LastSyncAt:   time.Now().UTC(),
+	}, nil
+}
+func (f fakeService) NetProbe(context.Context) (collabout.NetProbe, error) {
+	if f.err != nil {
+		return collabout.NetProbe{}, f.err
+	}
+	return collabout.NetProbe{
+		Reachability: domain.ReachabilityPublic,
+		NATMode:      "direct",
+		ListenAddrs:  []string{"/ip4/127.0.0.1/tcp/4001/p2p/peer-a"},
+		DialableAddrs: []string{
+			"/ip4/127.0.0.1/tcp/4001/p2p/peer-a",
+		},
+	}, nil
 }
 func (f fakeService) DaemonLogs(context.Context, int) (string, error) {
 	if f.err != nil {
@@ -117,6 +175,18 @@ func (f fakeService) SyncNow(context.Context) (int, error) {
 		return 0, f.err
 	}
 	return 4, nil
+}
+func (f fakeService) SyncHealth(context.Context) (collabout.SyncHealth, error) {
+	if f.err != nil {
+		return collabout.SyncHealth{}, f.err
+	}
+	return collabout.SyncHealth{
+		State:      domain.SyncHealthGood,
+		Reason:     "healthy",
+		LagSeconds: 5,
+		PendingOps: 2,
+		LastSyncAt: time.Now().UTC(),
+	}, nil
 }
 func (f fakeService) SnapshotExport(context.Context) (string, error) {
 	if f.err != nil {
@@ -166,6 +236,12 @@ func TestInteractorSuccess(t *testing.T) {
 	if _, err := uc.PeerRevoke(ctx, "peer-a"); err != nil {
 		t.Fatalf("peer revoke: %v", err)
 	}
+	if _, err := uc.PeerDial(ctx, "peer-a"); err != nil {
+		t.Fatalf("peer dial: %v", err)
+	}
+	if _, err := uc.PeerLatency(ctx); err != nil {
+		t.Fatalf("peer latency: %v", err)
+	}
 	if err := uc.PeerRemove(ctx, "peer-a"); err != nil {
 		t.Fatalf("peer remove: %v", err)
 	}
@@ -174,6 +250,12 @@ func TestInteractorSuccess(t *testing.T) {
 	}
 	if _, err := uc.Status(ctx); err != nil {
 		t.Fatalf("status: %v", err)
+	}
+	if _, err := uc.NetStatus(ctx); err != nil {
+		t.Fatalf("net status: %v", err)
+	}
+	if _, err := uc.NetProbe(ctx); err != nil {
+		t.Fatalf("net probe: %v", err)
 	}
 	if _, err := uc.DaemonLogs(ctx, 20); err != nil {
 		t.Fatalf("daemon logs: %v", err)
@@ -189,6 +271,9 @@ func TestInteractorSuccess(t *testing.T) {
 	}
 	if _, err := uc.SyncNow(ctx); err != nil {
 		t.Fatalf("sync now: %v", err)
+	}
+	if _, err := uc.SyncHealth(ctx); err != nil {
+		t.Fatalf("sync health: %v", err)
 	}
 	if _, err := uc.SnapshotExport(ctx); err != nil {
 		t.Fatalf("snapshot export: %v", err)
@@ -218,6 +303,12 @@ func TestInteractorErrors(t *testing.T) {
 	if _, err := uc.PeerAdd(ctx, "addr", "label"); err == nil {
 		t.Fatalf("expected peer add error")
 	}
+	if _, err := uc.PeerDial(ctx, "peer-a"); err == nil {
+		t.Fatalf("expected peer dial error")
+	}
+	if _, err := uc.PeerLatency(ctx); err == nil {
+		t.Fatalf("expected peer latency error")
+	}
 	if _, err := uc.PeerApprove(ctx, "peer-a"); err == nil {
 		t.Fatalf("expected peer approve error")
 	}
@@ -232,6 +323,12 @@ func TestInteractorErrors(t *testing.T) {
 	}
 	if _, err := uc.Status(ctx); err == nil {
 		t.Fatalf("expected status error")
+	}
+	if _, err := uc.NetStatus(ctx); err == nil {
+		t.Fatalf("expected net status error")
+	}
+	if _, err := uc.NetProbe(ctx); err == nil {
+		t.Fatalf("expected net probe error")
 	}
 	if _, err := uc.DaemonStatus(ctx); err == nil {
 		t.Fatalf("expected daemon status error")
@@ -250,6 +347,9 @@ func TestInteractorErrors(t *testing.T) {
 	}
 	if _, err := uc.SyncNow(ctx); err == nil {
 		t.Fatalf("expected sync now error")
+	}
+	if _, err := uc.SyncHealth(ctx); err == nil {
+		t.Fatalf("expected sync health error")
 	}
 	if _, err := uc.SnapshotExport(ctx); err == nil {
 		t.Fatalf("expected snapshot export error")
