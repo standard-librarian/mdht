@@ -13,8 +13,8 @@ func TestCRDTApplyRegisterLWW(t *testing.T) {
 	oldPayload, _ := json.Marshal(RegisterPayload{Field: "title", Value: mustRaw("old")})
 	newPayload, _ := json.Marshal(RegisterPayload{Field: "title", Value: mustRaw("new")})
 
-	old := OpEnvelope{WorkspaceID: "w", NodeID: "n", EntityKey: "source/1", OpID: "op-1", HLCTimestamp: HLC{Wall: 1, Counter: 0, NodeID: "n"}.String(), OpKind: OpKindPutRegister, Payload: oldPayload}
-	new := OpEnvelope{WorkspaceID: "w", NodeID: "n", EntityKey: "source/1", OpID: "op-2", HLCTimestamp: HLC{Wall: 2, Counter: 0, NodeID: "n"}.String(), OpKind: OpKindPutRegister, Payload: newPayload}
+	old := OpEnvelope{WorkspaceID: "w", WorkspaceKeyID: "k1", NodeID: "n", EntityKey: "source/1", OpID: "op-1", HLCTimestamp: HLC{Wall: 1, Counter: 0, NodeID: "n"}.String(), OpKind: OpKindPutRegister, Payload: oldPayload, SchemaVersion: SchemaVersionV2}
+	new := OpEnvelope{WorkspaceID: "w", WorkspaceKeyID: "k1", NodeID: "n", EntityKey: "source/1", OpID: "op-2", HLCTimestamp: HLC{Wall: 2, Counter: 0, NodeID: "n"}.String(), OpKind: OpKindPutRegister, Payload: newPayload, SchemaVersion: SchemaVersionV2}
 
 	if err := state.Apply(old); err != nil {
 		t.Fatalf("apply old: %v", err)
@@ -38,11 +38,11 @@ func TestCRDTApplySetAndSequence(t *testing.T) {
 	delete2, _ := json.Marshal(DeleteSequencePayload{Field: "managed_links", LineID: "l2"})
 
 	ops := []OpEnvelope{
-		{WorkspaceID: "w", NodeID: "n", EntityKey: "source/1", OpID: "1", HLCTimestamp: HLC{Wall: 1, Counter: 0, NodeID: "n"}.String(), OpKind: OpKindAddSet, Payload: addTag},
-		{WorkspaceID: "w", NodeID: "n", EntityKey: "source/1", OpID: "2", HLCTimestamp: HLC{Wall: 2, Counter: 0, NodeID: "n"}.String(), OpKind: OpKindRemoveSet, Payload: removeTag},
-		{WorkspaceID: "w", NodeID: "n", EntityKey: "source/1", OpID: "3", HLCTimestamp: HLC{Wall: 3, Counter: 0, NodeID: "n"}.String(), OpKind: OpKindInsertSeq, Payload: insert1},
-		{WorkspaceID: "w", NodeID: "n", EntityKey: "source/1", OpID: "4", HLCTimestamp: HLC{Wall: 4, Counter: 0, NodeID: "n"}.String(), OpKind: OpKindInsertSeq, Payload: insert2},
-		{WorkspaceID: "w", NodeID: "n", EntityKey: "source/1", OpID: "5", HLCTimestamp: HLC{Wall: 5, Counter: 0, NodeID: "n"}.String(), OpKind: OpKindDeleteSeq, Payload: delete2},
+		{WorkspaceID: "w", WorkspaceKeyID: "k1", NodeID: "n", EntityKey: "source/1", OpID: "1", HLCTimestamp: HLC{Wall: 1, Counter: 0, NodeID: "n"}.String(), OpKind: OpKindAddSet, Payload: addTag, SchemaVersion: SchemaVersionV2},
+		{WorkspaceID: "w", WorkspaceKeyID: "k1", NodeID: "n", EntityKey: "source/1", OpID: "2", HLCTimestamp: HLC{Wall: 2, Counter: 0, NodeID: "n"}.String(), OpKind: OpKindRemoveSet, Payload: removeTag, SchemaVersion: SchemaVersionV2},
+		{WorkspaceID: "w", WorkspaceKeyID: "k1", NodeID: "n", EntityKey: "source/1", OpID: "3", HLCTimestamp: HLC{Wall: 3, Counter: 0, NodeID: "n"}.String(), OpKind: OpKindInsertSeq, Payload: insert1, SchemaVersion: SchemaVersionV2},
+		{WorkspaceID: "w", WorkspaceKeyID: "k1", NodeID: "n", EntityKey: "source/1", OpID: "4", HLCTimestamp: HLC{Wall: 4, Counter: 0, NodeID: "n"}.String(), OpKind: OpKindInsertSeq, Payload: insert2, SchemaVersion: SchemaVersionV2},
+		{WorkspaceID: "w", WorkspaceKeyID: "k1", NodeID: "n", EntityKey: "source/1", OpID: "5", HLCTimestamp: HLC{Wall: 5, Counter: 0, NodeID: "n"}.String(), OpKind: OpKindDeleteSeq, Payload: delete2, SchemaVersion: SchemaVersionV2},
 	}
 	for _, op := range ops {
 		if err := state.Apply(op); err != nil {
@@ -64,7 +64,7 @@ func TestCRDTIdempotentAndTombstoneReset(t *testing.T) {
 	state := NewCRDTState()
 	put, _ := json.Marshal(RegisterPayload{Field: "title", Value: mustRaw("one")})
 	tombstone, _ := json.Marshal(map[string]any{"reason": "refresh"})
-	op := OpEnvelope{WorkspaceID: "w", NodeID: "n", EntityKey: "topic/x", OpID: "dup", HLCTimestamp: HLC{Wall: 1, Counter: 0, NodeID: "n"}.String(), OpKind: OpKindPutRegister, Payload: put}
+	op := OpEnvelope{WorkspaceID: "w", WorkspaceKeyID: "k1", NodeID: "n", EntityKey: "topic/x", OpID: "dup", HLCTimestamp: HLC{Wall: 1, Counter: 0, NodeID: "n"}.String(), OpKind: OpKindPutRegister, Payload: put, SchemaVersion: SchemaVersionV2}
 	if err := state.Apply(op); err != nil {
 		t.Fatalf("apply first op: %v", err)
 	}
@@ -74,7 +74,7 @@ func TestCRDTIdempotentAndTombstoneReset(t *testing.T) {
 	if state.AppliedCount != 1 {
 		t.Fatalf("expected idempotent count=1 got=%d", state.AppliedCount)
 	}
-	if err := state.Apply(OpEnvelope{WorkspaceID: "w", NodeID: "n", EntityKey: "topic/x", OpID: "t1", HLCTimestamp: HLC{Wall: 2, Counter: 0, NodeID: "n"}.String(), OpKind: OpKindTombstone, Payload: tombstone}); err != nil {
+	if err := state.Apply(OpEnvelope{WorkspaceID: "w", WorkspaceKeyID: "k1", NodeID: "n", EntityKey: "topic/x", OpID: "t1", HLCTimestamp: HLC{Wall: 2, Counter: 0, NodeID: "n"}.String(), OpKind: OpKindTombstone, Payload: tombstone, SchemaVersion: SchemaVersionV2}); err != nil {
 		t.Fatalf("apply tombstone: %v", err)
 	}
 	entity := state.Entities["topic/x"]
@@ -92,7 +92,7 @@ func TestSignedVerifyAndWorkspaceKey(t *testing.T) {
 	for i := range key {
 		key[i] = byte(i + 1)
 	}
-	op := OpEnvelope{WorkspaceID: "w", NodeID: "n", EntityKey: "source/1", OpID: "op", HLCTimestamp: HLC{Wall: time.Now().UnixMilli(), Counter: 1, NodeID: "n"}.String(), OpKind: OpKindReconcileHint, Payload: mustRaw(map[string]any{"x": 1})}
+	op := OpEnvelope{WorkspaceID: "w", WorkspaceKeyID: "k1", NodeID: "n", EntityKey: "source/1", OpID: "op", HLCTimestamp: HLC{Wall: time.Now().UnixMilli(), Counter: 1, NodeID: "n"}.String(), OpKind: OpKindReconcileHint, Payload: mustRaw(map[string]any{"x": 1}), SchemaVersion: SchemaVersionV2}
 	signed := op.Signed(key)
 	if !signed.Verify(key) {
 		t.Fatalf("expected signed op to verify")

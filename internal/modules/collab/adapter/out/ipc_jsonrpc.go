@@ -30,51 +30,86 @@ type rpcHandler struct {
 	h collabout.IPCHandler
 }
 
-type workspaceInitReq struct {
+type WorkspaceInitReq struct {
 	Name string
 }
 
-type workspaceShowResp struct {
+type WorkspaceRotateKeyReq struct {
+	GraceSeconds int64
+}
+
+type WorkspaceShowResp struct {
 	Workspace domain.Workspace
 	NodeID    string
 	Peers     []domain.Peer
 }
 
-type peerAddrReq struct {
-	Addr string
+type PeerAddReq struct {
+	Addr  string
+	Label string
 }
 
-type peerRemoveReq struct {
+type PeerReq struct {
 	PeerID string
 }
 
-type statusResp struct {
+type StatusResp struct {
 	Status collabout.DaemonStatus
 }
 
-type reconcileResp struct {
+type ActivityTailReq struct {
+	SinceUnixMilli int64
+	Limit          int
+}
+
+type ActivityTailResp struct {
+	Events []domain.ActivityEvent
+}
+
+type ConflictsListReq struct {
+	EntityKey string
+}
+
+type ConflictsListResp struct {
+	Records []domain.ConflictRecord
+}
+
+type ConflictResolveReq struct {
+	ConflictID string
+	Strategy   string
+}
+
+type ConflictResolveResp struct {
+	Record domain.ConflictRecord
+}
+
+type SyncResp struct {
 	Applied int
 }
 
-type exportStateResp struct {
+type SnapshotResp struct {
 	Payload string
 }
 
-type empty struct{}
+type MetricsResp struct {
+	Metrics collabout.MetricsSnapshot
+}
 
-func (s *rpcHandler) WorkspaceInit(req workspaceInitReq, resp *domain.Workspace) error {
+type Empty struct{}
+
+func (s *rpcHandler) WorkspaceInit(req WorkspaceInitReq, resp *domain.Workspace) error {
 	workspace, err := s.h.WorkspaceInit(context.Background(), req.Name)
 	if err != nil {
-		return err
+		return toRPCError(err)
 	}
 	*resp = workspace
 	return nil
 }
 
-func (s *rpcHandler) WorkspaceShow(_ empty, resp *workspaceShowResp) error {
+func (s *rpcHandler) WorkspaceShow(_ Empty, resp *WorkspaceShowResp) error {
 	workspace, nodeID, peers, err := s.h.WorkspaceShow(context.Background())
 	if err != nil {
-		return err
+		return toRPCError(err)
 	}
 	resp.Workspace = workspace
 	resp.NodeID = nodeID
@@ -82,57 +117,124 @@ func (s *rpcHandler) WorkspaceShow(_ empty, resp *workspaceShowResp) error {
 	return nil
 }
 
-func (s *rpcHandler) PeerAdd(req peerAddrReq, resp *domain.Peer) error {
-	peer, err := s.h.PeerAdd(context.Background(), req.Addr)
+func (s *rpcHandler) WorkspaceRotateKey(req WorkspaceRotateKeyReq, resp *domain.Workspace) error {
+	workspace, err := s.h.WorkspaceRotateKey(context.Background(), time.Duration(req.GraceSeconds)*time.Second)
 	if err != nil {
-		return err
+		return toRPCError(err)
+	}
+	*resp = workspace
+	return nil
+}
+
+func (s *rpcHandler) PeerAdd(req PeerAddReq, resp *domain.Peer) error {
+	peer, err := s.h.PeerAdd(context.Background(), req.Addr, req.Label)
+	if err != nil {
+		return toRPCError(err)
 	}
 	*resp = peer
 	return nil
 }
 
-func (s *rpcHandler) PeerRemove(req peerRemoveReq, _ *empty) error {
-	return s.h.PeerRemove(context.Background(), req.PeerID)
+func (s *rpcHandler) PeerApprove(req PeerReq, resp *domain.Peer) error {
+	peer, err := s.h.PeerApprove(context.Background(), req.PeerID)
+	if err != nil {
+		return toRPCError(err)
+	}
+	*resp = peer
+	return nil
 }
 
-func (s *rpcHandler) PeerList(_ empty, resp *[]domain.Peer) error {
+func (s *rpcHandler) PeerRevoke(req PeerReq, resp *domain.Peer) error {
+	peer, err := s.h.PeerRevoke(context.Background(), req.PeerID)
+	if err != nil {
+		return toRPCError(err)
+	}
+	*resp = peer
+	return nil
+}
+
+func (s *rpcHandler) PeerRemove(req PeerReq, _ *Empty) error {
+	return toRPCError(s.h.PeerRemove(context.Background(), req.PeerID))
+}
+
+func (s *rpcHandler) PeerList(_ Empty, resp *[]domain.Peer) error {
 	peers, err := s.h.PeerList(context.Background())
 	if err != nil {
-		return err
+		return toRPCError(err)
 	}
 	*resp = peers
 	return nil
 }
 
-func (s *rpcHandler) Status(_ empty, resp *statusResp) error {
+func (s *rpcHandler) Status(_ Empty, resp *StatusResp) error {
 	status, err := s.h.Status(context.Background())
 	if err != nil {
-		return err
+		return toRPCError(err)
 	}
 	resp.Status = status
 	return nil
 }
 
-func (s *rpcHandler) ReconcileNow(_ empty, resp *reconcileResp) error {
-	applied, err := s.h.ReconcileNow(context.Background())
+func (s *rpcHandler) ActivityTail(req ActivityTailReq, resp *ActivityTailResp) error {
+	query := collabout.ActivityQuery{Limit: req.Limit}
+	if req.SinceUnixMilli > 0 {
+		query.Since = time.UnixMilli(req.SinceUnixMilli).UTC()
+	}
+	events, err := s.h.ActivityTail(context.Background(), query)
 	if err != nil {
-		return err
+		return toRPCError(err)
+	}
+	resp.Events = events
+	return nil
+}
+
+func (s *rpcHandler) ConflictsList(req ConflictsListReq, resp *ConflictsListResp) error {
+	records, err := s.h.ConflictsList(context.Background(), req.EntityKey)
+	if err != nil {
+		return toRPCError(err)
+	}
+	resp.Records = records
+	return nil
+}
+
+func (s *rpcHandler) ConflictResolve(req ConflictResolveReq, resp *ConflictResolveResp) error {
+	record, err := s.h.ConflictResolve(context.Background(), req.ConflictID, domain.ConflictStrategy(req.Strategy))
+	if err != nil {
+		return toRPCError(err)
+	}
+	resp.Record = record
+	return nil
+}
+
+func (s *rpcHandler) SyncNow(_ Empty, resp *SyncResp) error {
+	applied, err := s.h.SyncNow(context.Background())
+	if err != nil {
+		return toRPCError(err)
 	}
 	resp.Applied = applied
 	return nil
 }
 
-func (s *rpcHandler) ExportState(_ empty, resp *exportStateResp) error {
-	payload, err := s.h.ExportState(context.Background())
+func (s *rpcHandler) SnapshotExport(_ Empty, resp *SnapshotResp) error {
+	payload, err := s.h.SnapshotExport(context.Background())
 	if err != nil {
-		return err
+		return toRPCError(err)
 	}
 	resp.Payload = payload
 	return nil
 }
 
-func (s *rpcHandler) Stop(_ empty, _ *empty) error {
-	return s.h.Stop(context.Background())
+func (s *rpcHandler) Metrics(_ Empty, resp *MetricsResp) error {
+	metrics, err := s.h.Metrics(context.Background())
+	if err != nil {
+		return toRPCError(err)
+	}
+	resp.Metrics = metrics
+	return nil
+}
+
+func (s *rpcHandler) Stop(_ Empty, _ *Empty) error {
+	return toRPCError(s.h.Stop(context.Background()))
 }
 
 func (s *JSONRPCServer) Serve(ctx context.Context, socketPath string, handler collabout.IPCHandler) error {
@@ -153,7 +255,7 @@ func (s *JSONRPCServer) Serve(ctx context.Context, socketPath string, handler co
 	defer ln.Close()
 
 	rpcSrv := rpc.NewServer()
-	if err := rpcSrv.RegisterName("Collab", &rpcHandler{h: handler}); err != nil {
+	if err := rpcSrv.RegisterName("CollabV2", &rpcHandler{h: handler}); err != nil {
 		return fmt.Errorf("register ipc handler: %w", err)
 	}
 
@@ -189,7 +291,7 @@ func (c *JSONRPCClient) WorkspaceInit(ctx context.Context, socketPath string, na
 	}
 	defer client.Close()
 	resp := domain.Workspace{}
-	if err := client.Call("Collab.WorkspaceInit", workspaceInitReq{Name: name}, &resp); err != nil {
+	if err := client.Call("CollabV2.WorkspaceInit", WorkspaceInitReq{Name: name}, &resp); err != nil {
 		return domain.Workspace{}, err
 	}
 	return resp, nil
@@ -201,21 +303,61 @@ func (c *JSONRPCClient) WorkspaceShow(ctx context.Context, socketPath string) (d
 		return domain.Workspace{}, "", nil, err
 	}
 	defer client.Close()
-	resp := workspaceShowResp{}
-	if err := client.Call("Collab.WorkspaceShow", empty{}, &resp); err != nil {
+	resp := WorkspaceShowResp{}
+	if err := client.Call("CollabV2.WorkspaceShow", Empty{}, &resp); err != nil {
 		return domain.Workspace{}, "", nil, err
 	}
 	return resp.Workspace, resp.NodeID, resp.Peers, nil
 }
 
-func (c *JSONRPCClient) PeerAdd(ctx context.Context, socketPath string, addr string) (domain.Peer, error) {
+func (c *JSONRPCClient) WorkspaceRotateKey(ctx context.Context, socketPath string, gracePeriod time.Duration) (domain.Workspace, error) {
+	client, err := dialClient(ctx, socketPath)
+	if err != nil {
+		return domain.Workspace{}, err
+	}
+	defer client.Close()
+	resp := domain.Workspace{}
+	req := WorkspaceRotateKeyReq{GraceSeconds: int64(gracePeriod.Seconds())}
+	if err := client.Call("CollabV2.WorkspaceRotateKey", req, &resp); err != nil {
+		return domain.Workspace{}, err
+	}
+	return resp, nil
+}
+
+func (c *JSONRPCClient) PeerAdd(ctx context.Context, socketPath string, addr, label string) (domain.Peer, error) {
 	client, err := dialClient(ctx, socketPath)
 	if err != nil {
 		return domain.Peer{}, err
 	}
 	defer client.Close()
 	resp := domain.Peer{}
-	if err := client.Call("Collab.PeerAdd", peerAddrReq{Addr: addr}, &resp); err != nil {
+	if err := client.Call("CollabV2.PeerAdd", PeerAddReq{Addr: addr, Label: label}, &resp); err != nil {
+		return domain.Peer{}, err
+	}
+	return resp, nil
+}
+
+func (c *JSONRPCClient) PeerApprove(ctx context.Context, socketPath string, peerID string) (domain.Peer, error) {
+	client, err := dialClient(ctx, socketPath)
+	if err != nil {
+		return domain.Peer{}, err
+	}
+	defer client.Close()
+	resp := domain.Peer{}
+	if err := client.Call("CollabV2.PeerApprove", PeerReq{PeerID: peerID}, &resp); err != nil {
+		return domain.Peer{}, err
+	}
+	return resp, nil
+}
+
+func (c *JSONRPCClient) PeerRevoke(ctx context.Context, socketPath string, peerID string) (domain.Peer, error) {
+	client, err := dialClient(ctx, socketPath)
+	if err != nil {
+		return domain.Peer{}, err
+	}
+	defer client.Close()
+	resp := domain.Peer{}
+	if err := client.Call("CollabV2.PeerRevoke", PeerReq{PeerID: peerID}, &resp); err != nil {
 		return domain.Peer{}, err
 	}
 	return resp, nil
@@ -227,7 +369,7 @@ func (c *JSONRPCClient) PeerRemove(ctx context.Context, socketPath string, peerI
 		return err
 	}
 	defer client.Close()
-	return client.Call("Collab.PeerRemove", peerRemoveReq{PeerID: peerID}, &empty{})
+	return client.Call("CollabV2.PeerRemove", PeerReq{PeerID: peerID}, &Empty{})
 }
 
 func (c *JSONRPCClient) PeerList(ctx context.Context, socketPath string) ([]domain.Peer, error) {
@@ -237,7 +379,7 @@ func (c *JSONRPCClient) PeerList(ctx context.Context, socketPath string) ([]doma
 	}
 	defer client.Close()
 	resp := []domain.Peer{}
-	if err := client.Call("Collab.PeerList", empty{}, &resp); err != nil {
+	if err := client.Call("CollabV2.PeerList", Empty{}, &resp); err != nil {
 		return nil, err
 	}
 	return resp, nil
@@ -249,37 +391,94 @@ func (c *JSONRPCClient) Status(ctx context.Context, socketPath string) (collabou
 		return collabout.DaemonStatus{}, err
 	}
 	defer client.Close()
-	resp := statusResp{}
-	if err := client.Call("Collab.Status", empty{}, &resp); err != nil {
+	resp := StatusResp{}
+	if err := client.Call("CollabV2.Status", Empty{}, &resp); err != nil {
 		return collabout.DaemonStatus{}, err
 	}
 	return resp.Status, nil
 }
 
-func (c *JSONRPCClient) ReconcileNow(ctx context.Context, socketPath string) (int, error) {
+func (c *JSONRPCClient) ActivityTail(ctx context.Context, socketPath string, query collabout.ActivityQuery) ([]domain.ActivityEvent, error) {
+	client, err := dialClient(ctx, socketPath)
+	if err != nil {
+		return nil, err
+	}
+	defer client.Close()
+	req := ActivityTailReq{Limit: query.Limit}
+	if !query.Since.IsZero() {
+		req.SinceUnixMilli = query.Since.UTC().UnixMilli()
+	}
+	resp := ActivityTailResp{}
+	if err := client.Call("CollabV2.ActivityTail", req, &resp); err != nil {
+		return nil, err
+	}
+	return resp.Events, nil
+}
+
+func (c *JSONRPCClient) ConflictsList(ctx context.Context, socketPath string, entityKey string) ([]domain.ConflictRecord, error) {
+	client, err := dialClient(ctx, socketPath)
+	if err != nil {
+		return nil, err
+	}
+	defer client.Close()
+	resp := ConflictsListResp{}
+	if err := client.Call("CollabV2.ConflictsList", ConflictsListReq{EntityKey: entityKey}, &resp); err != nil {
+		return nil, err
+	}
+	return resp.Records, nil
+}
+
+func (c *JSONRPCClient) ConflictResolve(ctx context.Context, socketPath, conflictID string, strategy domain.ConflictStrategy) (domain.ConflictRecord, error) {
+	client, err := dialClient(ctx, socketPath)
+	if err != nil {
+		return domain.ConflictRecord{}, err
+	}
+	defer client.Close()
+	resp := ConflictResolveResp{}
+	req := ConflictResolveReq{ConflictID: conflictID, Strategy: string(strategy)}
+	if err := client.Call("CollabV2.ConflictResolve", req, &resp); err != nil {
+		return domain.ConflictRecord{}, err
+	}
+	return resp.Record, nil
+}
+
+func (c *JSONRPCClient) SyncNow(ctx context.Context, socketPath string) (int, error) {
 	client, err := dialClient(ctx, socketPath)
 	if err != nil {
 		return 0, err
 	}
 	defer client.Close()
-	resp := reconcileResp{}
-	if err := client.Call("Collab.ReconcileNow", empty{}, &resp); err != nil {
+	resp := SyncResp{}
+	if err := client.Call("CollabV2.SyncNow", Empty{}, &resp); err != nil {
 		return 0, err
 	}
 	return resp.Applied, nil
 }
 
-func (c *JSONRPCClient) ExportState(ctx context.Context, socketPath string) (string, error) {
+func (c *JSONRPCClient) SnapshotExport(ctx context.Context, socketPath string) (string, error) {
 	client, err := dialClient(ctx, socketPath)
 	if err != nil {
 		return "", err
 	}
 	defer client.Close()
-	resp := exportStateResp{}
-	if err := client.Call("Collab.ExportState", empty{}, &resp); err != nil {
+	resp := SnapshotResp{}
+	if err := client.Call("CollabV2.SnapshotExport", Empty{}, &resp); err != nil {
 		return "", err
 	}
 	return resp.Payload, nil
+}
+
+func (c *JSONRPCClient) Metrics(ctx context.Context, socketPath string) (collabout.MetricsSnapshot, error) {
+	client, err := dialClient(ctx, socketPath)
+	if err != nil {
+		return collabout.MetricsSnapshot{}, err
+	}
+	defer client.Close()
+	resp := MetricsResp{}
+	if err := client.Call("CollabV2.Metrics", Empty{}, &resp); err != nil {
+		return collabout.MetricsSnapshot{}, err
+	}
+	return resp.Metrics, nil
 }
 
 func (c *JSONRPCClient) Stop(ctx context.Context, socketPath string) error {
@@ -288,7 +487,7 @@ func (c *JSONRPCClient) Stop(ctx context.Context, socketPath string) error {
 		return err
 	}
 	defer client.Close()
-	return client.Call("Collab.Stop", empty{}, &empty{})
+	return client.Call("CollabV2.Stop", Empty{}, &Empty{})
 }
 
 func dialClient(ctx context.Context, socketPath string) (*rpc.Client, error) {
@@ -300,4 +499,15 @@ func dialClient(ctx context.Context, socketPath string) (*rpc.Client, error) {
 	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
 	client := rpc.NewClientWithCodec(jsonrpc.NewClientCodec(conn))
 	return client, nil
+}
+
+func toRPCError(err error) error {
+	if err == nil {
+		return nil
+	}
+	code := domain.ErrorCodeFromError(err)
+	if code == "" {
+		return err
+	}
+	return fmt.Errorf("%s: %s", code, err.Error())
 }

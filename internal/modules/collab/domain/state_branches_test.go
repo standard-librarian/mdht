@@ -21,7 +21,7 @@ func TestOpKindAndWorkspaceValidation(t *testing.T) {
 	if err := (Workspace{}).Validate(); err == nil {
 		t.Fatalf("expected workspace validation error")
 	}
-	if err := (Workspace{ID: "ws-1", Name: "alpha"}).Validate(); err != nil {
+	if err := (Workspace{ID: "ws-1", Name: "alpha", SchemaVersion: SchemaVersionV2}).Validate(); err != nil {
 		t.Fatalf("workspace should validate: %v", err)
 	}
 }
@@ -48,17 +48,17 @@ func TestHLCHelpers(t *testing.T) {
 
 func TestOpEnvelopeValidateAndVerifyBranches(t *testing.T) {
 	t.Parallel()
-	base := OpEnvelope{WorkspaceID: "w", NodeID: "n", EntityKey: "source/1", OpID: "op1", HLCTimestamp: HLC{Wall: 1, Counter: 0, NodeID: "n"}.String(), OpKind: OpKindReconcileHint, Payload: mustRaw(map[string]any{"x": 1})}
+	base := OpEnvelope{WorkspaceID: "w", WorkspaceKeyID: "k1", NodeID: "n", EntityKey: "source/1", OpID: "op1", HLCTimestamp: HLC{Wall: 1, Counter: 0, NodeID: "n"}.String(), OpKind: OpKindReconcileHint, Payload: mustRaw(map[string]any{"x": 1}), SchemaVersion: SchemaVersionV2}
 	if err := base.Validate(); err != nil {
 		t.Fatalf("base envelope should validate: %v", err)
 	}
 	cases := []OpEnvelope{
-		{NodeID: "n", EntityKey: "source/1", OpID: "op1", HLCTimestamp: base.HLCTimestamp, OpKind: OpKindReconcileHint},
-		{WorkspaceID: "w", EntityKey: "source/1", OpID: "op1", HLCTimestamp: base.HLCTimestamp, OpKind: OpKindReconcileHint},
-		{WorkspaceID: "w", NodeID: "n", OpID: "op1", HLCTimestamp: base.HLCTimestamp, OpKind: OpKindReconcileHint},
-		{WorkspaceID: "w", NodeID: "n", EntityKey: "source/1", HLCTimestamp: base.HLCTimestamp, OpKind: OpKindReconcileHint},
-		{WorkspaceID: "w", NodeID: "n", EntityKey: "source/1", OpID: "op1", OpKind: OpKindReconcileHint},
-		{WorkspaceID: "w", NodeID: "n", EntityKey: "source/1", OpID: "op1", HLCTimestamp: base.HLCTimestamp, OpKind: OpKind("invalid")},
+		{WorkspaceKeyID: "k1", NodeID: "n", EntityKey: "source/1", OpID: "op1", HLCTimestamp: base.HLCTimestamp, OpKind: OpKindReconcileHint, SchemaVersion: SchemaVersionV2},
+		{WorkspaceID: "w", WorkspaceKeyID: "k1", EntityKey: "source/1", OpID: "op1", HLCTimestamp: base.HLCTimestamp, OpKind: OpKindReconcileHint, SchemaVersion: SchemaVersionV2},
+		{WorkspaceID: "w", WorkspaceKeyID: "k1", NodeID: "n", OpID: "op1", HLCTimestamp: base.HLCTimestamp, OpKind: OpKindReconcileHint, SchemaVersion: SchemaVersionV2},
+		{WorkspaceID: "w", WorkspaceKeyID: "k1", NodeID: "n", EntityKey: "source/1", HLCTimestamp: base.HLCTimestamp, OpKind: OpKindReconcileHint, SchemaVersion: SchemaVersionV2},
+		{WorkspaceID: "w", WorkspaceKeyID: "k1", NodeID: "n", EntityKey: "source/1", OpID: "op1", OpKind: OpKindReconcileHint, SchemaVersion: SchemaVersionV2},
+		{WorkspaceID: "w", WorkspaceKeyID: "k1", NodeID: "n", EntityKey: "source/1", OpID: "op1", HLCTimestamp: base.HLCTimestamp, OpKind: OpKind("invalid"), SchemaVersion: SchemaVersionV2},
 	}
 	for i, tc := range cases {
 		if err := tc.Validate(); err == nil {
@@ -108,7 +108,7 @@ func TestCRDTStateCloneAndCompaction(t *testing.T) {
 func TestApplyErrorBranchesAndReconcileNoop(t *testing.T) {
 	t.Parallel()
 	state := NewCRDTState()
-	validBase := OpEnvelope{WorkspaceID: "w", NodeID: "n", EntityKey: "source/1", OpID: "op", HLCTimestamp: HLC{Wall: 1, Counter: 0, NodeID: "n"}.String()}
+	validBase := OpEnvelope{WorkspaceID: "w", WorkspaceKeyID: "k1", NodeID: "n", EntityKey: "source/1", OpID: "op", HLCTimestamp: HLC{Wall: 1, Counter: 0, NodeID: "n"}.String(), SchemaVersion: SchemaVersionV2}
 
 	badPayloadCases := []struct {
 		kind OpKind

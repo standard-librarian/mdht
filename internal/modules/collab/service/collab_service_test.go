@@ -17,23 +17,30 @@ import (
 
 type fakeWorkspaceStore struct {
 	workspace domain.Workspace
-	key       []byte
+	keyRing   domain.KeyRing
 	node      domain.NodeIdentity
 	err       error
 }
 
-func (f fakeWorkspaceStore) Init(context.Context, string) (domain.Workspace, []byte, domain.NodeIdentity, error) {
+func (f fakeWorkspaceStore) Init(context.Context, string) (domain.Workspace, domain.KeyRing, domain.NodeIdentity, error) {
 	if f.err != nil {
-		return domain.Workspace{}, nil, domain.NodeIdentity{}, f.err
+		return domain.Workspace{}, domain.KeyRing{}, domain.NodeIdentity{}, f.err
 	}
-	return f.workspace, f.key, f.node, nil
+	return f.workspace, f.keyRing, f.node, nil
 }
 
-func (f fakeWorkspaceStore) Load(context.Context) (domain.Workspace, []byte, domain.NodeIdentity, error) {
+func (f fakeWorkspaceStore) Load(context.Context) (domain.Workspace, domain.KeyRing, domain.NodeIdentity, error) {
 	if f.err != nil {
-		return domain.Workspace{}, nil, domain.NodeIdentity{}, f.err
+		return domain.Workspace{}, domain.KeyRing{}, domain.NodeIdentity{}, f.err
 	}
-	return f.workspace, f.key, f.node, nil
+	return f.workspace, f.keyRing, f.node, nil
+}
+
+func (f fakeWorkspaceStore) RotateKey(context.Context, time.Duration) (domain.KeyRing, error) {
+	if f.err != nil {
+		return domain.KeyRing{}, f.err
+	}
+	return f.keyRing, nil
 }
 
 type fakePeerStore struct {
@@ -41,15 +48,32 @@ type fakePeerStore struct {
 	err   error
 }
 
-func (f *fakePeerStore) Add(context.Context, string) (domain.Peer, error) {
+func (f *fakePeerStore) Add(context.Context, string, string) (domain.Peer, error) {
 	if f.err != nil {
 		return domain.Peer{}, f.err
 	}
-	peer := domain.Peer{PeerID: "peer-a", Address: "/ip4/127.0.0.1/tcp/4001/p2p/peer-a", AddedAt: time.Now().UTC()}
+	peer := domain.Peer{PeerID: "peer-a", Address: "/ip4/127.0.0.1/tcp/4001/p2p/peer-a", State: domain.PeerStateApproved, AddedAt: time.Now().UTC()}
 	f.peers = append(f.peers, peer)
 	return peer, nil
 }
-
+func (f *fakePeerStore) Approve(_ context.Context, peerID string) (domain.Peer, error) {
+	for i := range f.peers {
+		if f.peers[i].PeerID == peerID {
+			f.peers[i].State = domain.PeerStateApproved
+			return f.peers[i], nil
+		}
+	}
+	return domain.Peer{}, domain.ErrPeerNotFound
+}
+func (f *fakePeerStore) Revoke(_ context.Context, peerID string) (domain.Peer, error) {
+	for i := range f.peers {
+		if f.peers[i].PeerID == peerID {
+			f.peers[i].State = domain.PeerStateRevoked
+			return f.peers[i], nil
+		}
+	}
+	return domain.Peer{}, domain.ErrPeerNotFound
+}
 func (f *fakePeerStore) Remove(_ context.Context, peerID string) error {
 	out := make([]domain.Peer, 0, len(f.peers))
 	for _, peer := range f.peers {
@@ -60,7 +84,6 @@ func (f *fakePeerStore) Remove(_ context.Context, peerID string) error {
 	f.peers = out
 	return nil
 }
-
 func (f *fakePeerStore) List(context.Context) ([]domain.Peer, error) {
 	if f.err != nil {
 		return nil, f.err
@@ -74,7 +97,6 @@ func (f *fakeOpLogStore) Append(_ context.Context, op domain.OpEnvelope) error {
 	f.ops = append(f.ops, op)
 	return nil
 }
-
 func (f *fakeOpLogStore) List(context.Context) ([]domain.OpEnvelope, error) {
 	return append([]domain.OpEnvelope{}, f.ops...), nil
 }
@@ -87,7 +109,6 @@ func (f *fakeSnapshotStore) Load(context.Context) (domain.CRDTState, error) {
 	}
 	return f.state, nil
 }
-
 func (f *fakeSnapshotStore) Save(_ context.Context, state domain.CRDTState) error {
 	f.state = state
 	return nil
@@ -95,7 +116,7 @@ func (f *fakeSnapshotStore) Save(_ context.Context, state domain.CRDTState) erro
 
 type fakeExtractor struct{}
 
-func (fakeExtractor) Extract(context.Context, string, string, time.Time) ([]domain.OpEnvelope, error) {
+func (fakeExtractor) Extract(context.Context, string, string, string, time.Time) ([]domain.OpEnvelope, error) {
 	return nil, nil
 }
 
@@ -115,10 +136,15 @@ func (fakeRuntimeTransport) Broadcast(context.Context, domain.OpEnvelope) error 
 func (fakeRuntimeTransport) Reconcile(context.Context, []domain.OpEnvelope) error {
 	return nil
 }
-func (fakeRuntimeTransport) AddPeer(context.Context, domain.Peer) error { return nil }
-func (fakeRuntimeTransport) RemovePeer(context.Context, string) error   { return nil }
-func (fakeRuntimeTransport) Status() collabout.NetworkStatus            { return collabout.NetworkStatus{} }
-func (fakeRuntimeTransport) Stop() error                                { return nil }
+func (fakeRuntimeTransport) AddPeer(context.Context, domain.Peer) error     { return nil }
+func (fakeRuntimeTransport) ApprovePeer(context.Context, domain.Peer) error { return nil }
+func (fakeRuntimeTransport) RevokePeer(context.Context, string) error       { return nil }
+func (fakeRuntimeTransport) RemovePeer(context.Context, string) error       { return nil }
+func (fakeRuntimeTransport) UpdateKeyRing(context.Context, domain.KeyRing) error {
+	return nil
+}
+func (fakeRuntimeTransport) Status() collabout.NetworkStatus { return collabout.NetworkStatus{} }
+func (fakeRuntimeTransport) Stop() error                     { return nil }
 
 type fakeDaemonStore struct {
 	pidPath    string
@@ -141,7 +167,6 @@ func (d *fakeDaemonStore) WritePID(_ context.Context, pid int) error {
 	}
 	return os.WriteFile(d.pidPath, []byte(strconv.Itoa(pid)), 0o644)
 }
-
 func (d *fakeDaemonStore) ReadPID(_ context.Context) (int, error) {
 	raw, err := os.ReadFile(d.pidPath)
 	if err != nil {
@@ -149,14 +174,12 @@ func (d *fakeDaemonStore) ReadPID(_ context.Context) (int, error) {
 	}
 	return strconv.Atoi(strings.TrimSpace(string(raw)))
 }
-
 func (d *fakeDaemonStore) ClearPID(_ context.Context) error {
 	if err := os.Remove(d.pidPath); err != nil && !os.IsNotExist(err) {
 		return err
 	}
 	return nil
 }
-
 func (d *fakeDaemonStore) SocketPath() string { return d.socketPath }
 func (d *fakeDaemonStore) LogPath() string    { return d.logPath }
 
@@ -172,7 +195,16 @@ func (fakeIPCClient) WorkspaceInit(context.Context, string, string) (domain.Work
 func (fakeIPCClient) WorkspaceShow(context.Context, string) (domain.Workspace, string, []domain.Peer, error) {
 	return domain.Workspace{}, "", nil, errors.New("not implemented")
 }
-func (fakeIPCClient) PeerAdd(context.Context, string, string) (domain.Peer, error) {
+func (fakeIPCClient) WorkspaceRotateKey(context.Context, string, time.Duration) (domain.Workspace, error) {
+	return domain.Workspace{}, errors.New("not implemented")
+}
+func (fakeIPCClient) PeerAdd(context.Context, string, string, string) (domain.Peer, error) {
+	return domain.Peer{}, errors.New("not implemented")
+}
+func (fakeIPCClient) PeerApprove(context.Context, string, string) (domain.Peer, error) {
+	return domain.Peer{}, errors.New("not implemented")
+}
+func (fakeIPCClient) PeerRevoke(context.Context, string, string) (domain.Peer, error) {
 	return domain.Peer{}, errors.New("not implemented")
 }
 func (fakeIPCClient) PeerRemove(context.Context, string, string) error {
@@ -184,20 +216,49 @@ func (fakeIPCClient) PeerList(context.Context, string) ([]domain.Peer, error) {
 func (fakeIPCClient) Status(context.Context, string) (collabout.DaemonStatus, error) {
 	return collabout.DaemonStatus{}, errors.New("not implemented")
 }
-func (fakeIPCClient) ReconcileNow(context.Context, string) (int, error) {
+func (fakeIPCClient) ActivityTail(context.Context, string, collabout.ActivityQuery) ([]domain.ActivityEvent, error) {
+	return nil, errors.New("not implemented")
+}
+func (fakeIPCClient) ConflictsList(context.Context, string, string) ([]domain.ConflictRecord, error) {
+	return nil, errors.New("not implemented")
+}
+func (fakeIPCClient) ConflictResolve(context.Context, string, string, domain.ConflictStrategy) (domain.ConflictRecord, error) {
+	return domain.ConflictRecord{}, errors.New("not implemented")
+}
+func (fakeIPCClient) SyncNow(context.Context, string) (int, error) {
 	return 0, errors.New("not implemented")
 }
-func (fakeIPCClient) ExportState(context.Context, string) (string, error) {
+func (fakeIPCClient) SnapshotExport(context.Context, string) (string, error) {
 	return "", errors.New("not implemented")
+}
+func (fakeIPCClient) Metrics(context.Context, string) (collabout.MetricsSnapshot, error) {
+	return collabout.MetricsSnapshot{}, errors.New("not implemented")
 }
 func (fakeIPCClient) Stop(context.Context, string) error { return nil }
 
+type fakeActivityStore struct{}
+
+func (fakeActivityStore) Append(context.Context, domain.ActivityEvent) error { return nil }
+func (fakeActivityStore) Tail(context.Context, collabout.ActivityQuery) ([]domain.ActivityEvent, error) {
+	return nil, nil
+}
+
+type fakeConflictStore struct{}
+
+func (fakeConflictStore) List(context.Context, string) ([]domain.ConflictRecord, error) {
+	return nil, nil
+}
+func (fakeConflictStore) Upsert(context.Context, domain.ConflictRecord) error { return nil }
+
 func newServiceForTest(vaultPath string, workspaceErr error, peers []domain.Peer) (*service.CollabService, *fakeDaemonStore) {
 	ws := fakeWorkspaceStore{
-		workspace: domain.Workspace{ID: "ws-1", Name: "alpha", CreatedAt: time.Date(2026, 2, 25, 12, 0, 0, 0, time.UTC)},
-		key:       []byte("12345678901234567890123456789012"),
-		node:      domain.NodeIdentity{NodeID: "node-a", PrivateKey: ""},
-		err:       workspaceErr,
+		workspace: domain.Workspace{ID: "ws-1", Name: "alpha", SchemaVersion: domain.SchemaVersionV2, CreatedAt: time.Date(2026, 2, 25, 12, 0, 0, 0, time.UTC)},
+		keyRing: domain.KeyRing{
+			ActiveKeyID: "k1",
+			Keys:        []domain.KeyRecord{{ID: "k1", KeyBase64: "MTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTI=", CreatedAt: time.Now().UTC()}},
+		},
+		node: domain.NodeIdentity{NodeID: "node-a", PrivateKey: ""},
+		err:  workspaceErr,
 	}
 	peerStore := &fakePeerStore{peers: peers}
 	daemonStore := newFakeDaemonStore(vaultPath)
@@ -213,6 +274,8 @@ func newServiceForTest(vaultPath string, workspaceErr error, peers []domain.Peer
 		daemonStore,
 		fakeIPCServer{},
 		fakeIPCClient{},
+		fakeActivityStore{},
+		fakeConflictStore{},
 	), daemonStore
 }
 
@@ -268,20 +331,11 @@ func TestDaemonLogsTail(t *testing.T) {
 	}
 }
 
-func TestDoctorAndReconcileNoDaemon(t *testing.T) {
+func TestSyncNowWithoutDaemon(t *testing.T) {
 	t.Parallel()
 	vault := t.TempDir()
-	svc, _ := newServiceForTest(vault, nil, []domain.Peer{{PeerID: "peer-a", Address: "/ip4/127.0.0.1/tcp/4001/p2p/peer-a"}})
-
-	checks, err := svc.Doctor(context.Background())
-	if err != nil {
-		t.Fatalf("doctor: %v", err)
-	}
-	if len(checks) == 0 {
-		t.Fatalf("expected doctor checks")
-	}
-
-	if _, err := svc.ReconcileNow(context.Background()); !errors.Is(err, domain.ErrDaemonNotRunning) {
+	svc, _ := newServiceForTest(vault, nil, []domain.Peer{{PeerID: "peer-a", Address: "/ip4/127.0.0.1/tcp/4001/p2p/peer-a", State: domain.PeerStateApproved}})
+	if _, err := svc.SyncNow(context.Background()); !errors.Is(err, domain.ErrDaemonNotRunning) {
 		t.Fatalf("expected daemon not running error, got %v", err)
 	}
 }

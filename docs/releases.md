@@ -46,12 +46,26 @@ grep " ${ASSET}$" checksums.txt | sha256sum -c -
 5. Start daemon:
    - `mdht collab daemon start --vault <path>`
 6. Validate:
-   - `mdht collab doctor --vault <path>`
    - `mdht collab status --vault <path>`
+   - `mdht collab metrics --vault <path>`
+
+## Phase 6 migration notes
+
+On first v2 daemon startup, mdht auto-migrates legacy collab state in place.
+
+- Trigger: presence of legacy `workspace.key` and missing `keys.json`.
+- Backup location: `.mdht/collab/migrations/<timestamp>-v1-backup/`
+- Migration marker: `.mdht/collab/migration.state`
+
+Recommended post-upgrade checks:
+
+1. `mdht collab daemon status --vault <path>`
+2. `mdht collab status --vault <path>`
+3. `mdht collab peer list --vault <path>`
+4. `mdht collab sync now --vault <path>`
 
 ## Compatibility policy in beta
 
 - CLI and docs may evolve between beta tags.
 - Existing commands are kept stable where practical.
 - For contract-level changes, ADRs under `docs/adr/` are updated.
-

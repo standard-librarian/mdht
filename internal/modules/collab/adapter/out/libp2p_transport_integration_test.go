@@ -26,6 +26,11 @@ func TestLibp2pTwoNodeReplicationAndAuthRejection(t *testing.T) {
 	if _, err := rand.Read(workspaceKey); err != nil {
 		t.Fatalf("workspace key: %v", err)
 	}
+	keyID := "k1"
+	keyRing := domain.KeyRing{
+		ActiveKeyID: keyID,
+		Keys:        []domain.KeyRecord{{ID: keyID, KeyBase64: base64.StdEncoding.EncodeToString(workspaceKey), CreatedAt: time.Now().UTC()}},
+	}
 	node1 := mustNodeIdentity(t)
 	node2 := mustNodeIdentity(t)
 
@@ -33,7 +38,7 @@ func TestLibp2pTwoNodeReplicationAndAuthRejection(t *testing.T) {
 	transport := out.NewLibp2pTransport()
 	rt1, err := transport.Start(ctx, collabout.TransportStartInput{
 		WorkspaceID:  workspaceID,
-		WorkspaceKey: workspaceKey,
+		KeyRing:      keyRing,
 		NodeIdentity: node1,
 	}, collabout.TransportHandlers{})
 	if err != nil {
@@ -43,7 +48,7 @@ func TestLibp2pTwoNodeReplicationAndAuthRejection(t *testing.T) {
 
 	rt2, err := transport.Start(ctx, collabout.TransportStartInput{
 		WorkspaceID:  workspaceID,
-		WorkspaceKey: workspaceKey,
+		KeyRing:      keyRing,
 		NodeIdentity: node2,
 	}, collabout.TransportHandlers{
 		OnOp: func(op domain.OpEnvelope) {
@@ -57,11 +62,14 @@ func TestLibp2pTwoNodeReplicationAndAuthRejection(t *testing.T) {
 
 	peerAddr := dialableAddr(t, rt1.Status().ListenAddrs)
 	peerID := parsePeerID(t, peerAddr)
-	if err := rt2.AddPeer(ctx, domain.Peer{PeerID: peerID, Address: peerAddr, AddedAt: time.Now().UTC()}); err != nil {
+	peerAddr2 := dialableAddr(t, rt2.Status().ListenAddrs)
+	peerID2 := parsePeerID(t, peerAddr2)
+	_ = rt1.AddPeer(ctx, domain.Peer{PeerID: peerID2, Address: peerAddr2, State: domain.PeerStateApproved, AddedAt: time.Now().UTC()})
+	if err := rt2.AddPeer(ctx, domain.Peer{PeerID: peerID, Address: peerAddr, State: domain.PeerStateApproved, AddedAt: time.Now().UTC()}); err != nil {
 		t.Fatalf("add peer node2->node1: %v", err)
 	}
 
-	op1 := newSignedOp(t, workspaceID, node1.NodeID, workspaceKey, "op-1", "source/1", "title", "A")
+	op1 := newSignedOp(t, workspaceID, keyID, node1.NodeID, workspaceKey, "op-1", "source/1", "title", "A")
 	if err := rt1.Broadcast(ctx, op1); err != nil {
 		t.Fatalf("broadcast op1: %v", err)
 	}
@@ -70,12 +78,13 @@ func TestLibp2pTwoNodeReplicationAndAuthRejection(t *testing.T) {
 	if err := rt2.RemovePeer(ctx, peerID); err != nil {
 		t.Fatalf("remove peer: %v", err)
 	}
-	op2 := newSignedOp(t, workspaceID, node1.NodeID, workspaceKey, "op-2", "source/1", "title", "B")
+	op2 := newSignedOp(t, workspaceID, keyID, node1.NodeID, workspaceKey, "op-2", "source/1", "title", "B")
 	if err := rt1.Broadcast(ctx, op2); err != nil {
 		t.Fatalf("broadcast op2 while disconnected: %v", err)
 	}
 
-	if err := rt2.AddPeer(ctx, domain.Peer{PeerID: peerID, Address: peerAddr, AddedAt: time.Now().UTC()}); err != nil {
+	_ = rt1.AddPeer(ctx, domain.Peer{PeerID: peerID2, Address: peerAddr2, State: domain.PeerStateApproved, AddedAt: time.Now().UTC()})
+	if err := rt2.AddPeer(ctx, domain.Peer{PeerID: peerID, Address: peerAddr, State: domain.PeerStateApproved, AddedAt: time.Now().UTC()}); err != nil {
 		t.Fatalf("re-add peer: %v", err)
 	}
 	if err := rt1.Reconcile(ctx, []domain.OpEnvelope{op1, op2}); err != nil {
@@ -89,8 +98,11 @@ func TestLibp2pTwoNodeReplicationAndAuthRejection(t *testing.T) {
 	}
 	node3 := mustNodeIdentity(t)
 	rtBad, err := transport.Start(ctx, collabout.TransportStartInput{
-		WorkspaceID:  workspaceID,
-		WorkspaceKey: wrongKey,
+		WorkspaceID: workspaceID,
+		KeyRing: domain.KeyRing{
+			ActiveKeyID: keyID,
+			Keys:        []domain.KeyRecord{{ID: keyID, KeyBase64: base64.StdEncoding.EncodeToString(wrongKey), CreatedAt: time.Now().UTC()}},
+		},
 		NodeIdentity: node3,
 	}, collabout.TransportHandlers{})
 	if err != nil {
@@ -98,7 +110,11 @@ func TestLibp2pTwoNodeReplicationAndAuthRejection(t *testing.T) {
 	}
 	defer func() { _ = rtBad.Stop() }()
 
-	err = rtBad.AddPeer(ctx, domain.Peer{PeerID: peerID, Address: peerAddr, AddedAt: time.Now().UTC()})
+	badAddr := dialableAddr(t, rtBad.Status().ListenAddrs)
+	badPeerID := parsePeerID(t, badAddr)
+	_ = rt1.AddPeer(ctx, domain.Peer{PeerID: badPeerID, Address: badAddr, State: domain.PeerStateApproved, AddedAt: time.Now().UTC()})
+
+	err = rtBad.AddPeer(ctx, domain.Peer{PeerID: peerID, Address: peerAddr, State: domain.PeerStateApproved, AddedAt: time.Now().UTC()})
 	if err == nil {
 		t.Fatalf("expected auth error from wrong workspace key")
 	}
@@ -119,20 +135,22 @@ func mustNodeIdentity(t *testing.T) domain.NodeIdentity {
 	}
 }
 
-func newSignedOp(t *testing.T, workspaceID, nodeID string, key []byte, opID, entity, field, value string) domain.OpEnvelope {
+func newSignedOp(t *testing.T, workspaceID, workspaceKeyID, nodeID string, key []byte, opID, entity, field, value string) domain.OpEnvelope {
 	t.Helper()
 	payload, err := json.Marshal(domain.RegisterPayload{Field: field, Value: mustRaw(value)})
 	if err != nil {
 		t.Fatalf("marshal payload: %v", err)
 	}
 	op := domain.OpEnvelope{
-		WorkspaceID:  workspaceID,
-		NodeID:       nodeID,
-		EntityKey:    entity,
-		OpID:         opID,
-		HLCTimestamp: domain.HLC{Wall: time.Now().UTC().UnixMilli(), Counter: 1, NodeID: nodeID}.String(),
-		OpKind:       domain.OpKindPutRegister,
-		Payload:      payload,
+		WorkspaceID:    workspaceID,
+		WorkspaceKeyID: workspaceKeyID,
+		NodeID:         nodeID,
+		EntityKey:      entity,
+		OpID:           opID,
+		HLCTimestamp:   domain.HLC{Wall: time.Now().UTC().UnixMilli(), Counter: 1, NodeID: nodeID}.String(),
+		OpKind:         domain.OpKindPutRegister,
+		Payload:        payload,
+		SchemaVersion:  domain.SchemaVersionV2,
 	}
 	return op.Signed(key)
 }

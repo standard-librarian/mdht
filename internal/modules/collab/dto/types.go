@@ -3,9 +3,10 @@ package dto
 import "time"
 
 type WorkspaceOutput struct {
-	ID        string
-	Name      string
-	CreatedAt time.Time
+	ID            string
+	Name          string
+	CreatedAt     time.Time
+	SchemaVersion int
 }
 
 type WorkspaceShowOutput struct {
@@ -17,19 +18,26 @@ type WorkspaceShowOutput struct {
 type PeerOutput struct {
 	PeerID    string
 	Address   string
+	Label     string
+	State     string
+	FirstSeen time.Time
+	LastSeen  time.Time
 	AddedAt   time.Time
 	LastError string
 }
 
 type StatusOutput struct {
-	Online      bool
-	PeerCount   int
-	PendingOps  int
-	LastSyncAt  time.Time
-	NodeID      string
-	WorkspaceID string
-	ListenAddrs []string
-	Counters    ValidationCountersOutput
+	Online            bool
+	PeerCount         int
+	ApprovedPeerCount int
+	PendingConflicts  int
+	PendingOps        int
+	LastSyncAt        time.Time
+	NodeID            string
+	WorkspaceID       string
+	ListenAddrs       []string
+	MetricsAddress    string
+	Counters          ValidationCountersOutput
 }
 
 type DaemonStatusOutput struct {
@@ -66,4 +74,37 @@ type ReconcileOutput struct {
 
 type ExportStateOutput struct {
 	Payload string
+}
+
+type ActivityOutput struct {
+	ID         string
+	OccurredAt time.Time
+	Type       string
+	Message    string
+	Fields     map[string]string
+}
+
+type ConflictOutput struct {
+	ID          string
+	EntityKey   string
+	Field       string
+	LocalValue  string
+	RemoteValue string
+	Status      string
+	Strategy    string
+	MergedValue string
+	CreatedAt   time.Time
+	ResolvedAt  time.Time
+	ResolvedBy  string
+}
+
+type MetricsOutput struct {
+	WorkspaceID      string
+	NodeID           string
+	ApprovedPeers    int
+	PendingConflicts int
+	PendingOps       int
+	LastSyncAt       time.Time
+	CollectedAt      time.Time
+	Counters         ValidationCountersOutput
 }

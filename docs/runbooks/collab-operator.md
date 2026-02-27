@@ -1,4 +1,4 @@
-# Collaboration Operator Runbook (Phase 5)
+# Collaboration Operator Runbook (Phase 6)
 
 This runbook covers single-vault daemon operations, two-peer bootstrap, health checks, and incident recovery for `mdht` collaboration transport.
 
@@ -33,7 +33,7 @@ mdht collab daemon start --vault /path/to/vault
 ```bash
 mdht collab daemon status --vault /path/to/vault
 mdht collab status --vault /path/to/vault
-mdht collab doctor --vault /path/to/vault
+mdht collab metrics --vault /path/to/vault
 ```
 
 4. Inspect runtime logs:
@@ -67,6 +67,7 @@ mdht collab workspace init --name "team-alpha" --vault /vault/B
 
 ```bash
 mdht collab peer add --addr /ip4/<A-IP>/tcp/<A-PORT>/p2p/<A-PEER-ID> --vault /vault/B
+mdht collab peer approve --peer-id <A-PEER-ID> --vault /vault/B
 ```
 
 3. Start daemon and validate:
@@ -74,30 +75,33 @@ mdht collab peer add --addr /ip4/<A-IP>/tcp/<A-PORT>/p2p/<A-PEER-ID> --vault /va
 ```bash
 mdht collab daemon start --vault /vault/B
 mdht collab status --vault /vault/B
-mdht collab doctor --vault /vault/B
+mdht collab metrics --vault /vault/B
 ```
 
 4. Optionally add B->A reciprocal peer entry:
 
 ```bash
 mdht collab peer add --addr /ip4/<B-IP>/tcp/<B-PORT>/p2p/<B-PEER-ID> --vault /vault/A
+mdht collab peer approve --peer-id <B-PEER-ID> --vault /vault/A
 ```
 
 ## Health checks
 
 Run these checks in order when debugging replication:
 
-1. `mdht collab doctor --vault <path>`
+1. `mdht collab workspace show --vault <path>`
 2. `mdht collab daemon status --vault <path>`
 3. `mdht collab status --vault <path>`
 4. `mdht collab peer list --vault <path>`
 5. `mdht collab daemon logs --tail 300 --vault <path>`
+6. `mdht collab metrics --vault <path>`
+7. `mdht collab activity tail --limit 100 --vault <path>`
 
 Interpretation:
 
 - `daemon status`: process/socket health.
 - `status`: runtime online/peer/pending ops and counters.
-- `doctor`: actionable pass/fail checks.
+- `metrics`: realtime counters and queue depths.
 - log tail: authentication, decode, and reconnect details.
 
 ## Incident playbooks
@@ -107,7 +111,7 @@ Interpretation:
 Symptoms:
 
 - `daemon start` fails with socket/pid conflict.
-- `doctor` reports socket unreachable.
+- `daemon status` reports socket unreachable.
 
 Actions:
 
@@ -123,7 +127,7 @@ mdht collab daemon stop --vault <path>
 mdht collab daemon start --vault <path>
 ```
 
-3. Verify with `doctor` and `daemon status`.
+3. Verify with `daemon status` and `metrics`.
 
 ### Key mismatch/auth failures
 
@@ -146,16 +150,16 @@ Symptoms:
 
 Actions:
 
-1. Trigger reconcile on both peers:
+1. Trigger sync on both peers:
 
 ```bash
-mdht collab reconcile --vault <path>
+mdht collab sync now --vault <path>
 ```
 
 2. Compare exported state snapshots:
 
 ```bash
-mdht collab export-state --vault <path>
+mdht collab snapshot export --out /tmp/collab-snapshot.json --vault <path>
 ```
 
 3. If needed, run `mdht reindex` after convergence validation.
@@ -165,22 +169,21 @@ mdht collab export-state --vault <path>
 1. Stop daemon.
 2. Ensure vault managed files are intact.
 3. Restart daemon.
-4. Run `mdht collab reconcile`.
-5. Validate with `doctor`, `status`, and sample note checks.
+4. Run `mdht collab sync now`.
+5. Validate with `status`, `metrics`, and sample note checks.
 
 ## Upgrade and restart procedure
 
 1. Stop daemon on each node.
 2. Upgrade binary.
 3. Start daemon.
-4. Run `doctor` and `status` checks.
-5. Trigger one manual reconcile after full rollout.
+4. Run `status` and `metrics` checks.
+5. Trigger one manual sync after full rollout.
 
 ## Exit criteria (operations)
 
 A node is considered healthy when:
 
-- `doctor` has no failing checks.
 - `daemon status` is running with valid socket.
 - `status` shows expected peer count and stable counters.
-- replication converges after manual reconcile.
+- replication converges after manual sync.

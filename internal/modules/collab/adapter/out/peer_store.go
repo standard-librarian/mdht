@@ -24,7 +24,7 @@ func NewFilePeerStore(vaultPath string) collabout.PeerStore {
 	return &FilePeerStore{path: filepath.Join(vaultPath, ".mdht", "collab", "peers.json")}
 }
 
-func (s *FilePeerStore) Add(ctx context.Context, addr string) (domain.Peer, error) {
+func (s *FilePeerStore) Add(ctx context.Context, addr, label string) (domain.Peer, error) {
 	_ = ctx
 	if strings.TrimSpace(addr) == "" {
 		return domain.Peer{}, domain.ErrInvalidPeerAddress
@@ -40,17 +40,41 @@ func (s *FilePeerStore) Add(ctx context.Context, addr string) (domain.Peer, erro
 	if err != nil {
 		return domain.Peer{}, err
 	}
-	for _, item := range peers {
-		if item.PeerID == peerID {
-			return item, nil
+	for i, item := range peers {
+		if item.PeerID != peerID {
+			continue
 		}
+		peers[i].Address = addr
+		peers[i].Label = label
+		peers[i].LastSeen = time.Now().UTC()
+		if err := s.write(peers); err != nil {
+			return domain.Peer{}, err
+		}
+		return peers[i], nil
 	}
-	peer := domain.Peer{PeerID: peerID, Address: addr, AddedAt: time.Now().UTC()}
+	now := time.Now().UTC()
+	peer := domain.Peer{
+		PeerID:    peerID,
+		Address:   addr,
+		Label:     label,
+		State:     domain.PeerStatePending,
+		FirstSeen: now,
+		LastSeen:  now,
+		AddedAt:   now,
+	}
 	peers = append(peers, peer)
 	if err := s.write(peers); err != nil {
 		return domain.Peer{}, err
 	}
 	return peer, nil
+}
+
+func (s *FilePeerStore) Approve(ctx context.Context, peerID string) (domain.Peer, error) {
+	return s.updateState(ctx, peerID, domain.PeerStateApproved)
+}
+
+func (s *FilePeerStore) Revoke(ctx context.Context, peerID string) (domain.Peer, error) {
+	return s.updateState(ctx, peerID, domain.PeerStateRevoked)
 }
 
 func (s *FilePeerStore) Remove(ctx context.Context, peerID string) error {
@@ -89,10 +113,34 @@ func (s *FilePeerStore) List(_ context.Context) ([]domain.Peer, error) {
 	if err := json.Unmarshal(raw, &peers); err != nil {
 		return nil, fmt.Errorf("decode peers: %w", err)
 	}
+	for i := range peers {
+		if peers[i].State == "" {
+			peers[i].State = domain.PeerStatePending
+		}
+	}
 	sort.Slice(peers, func(i, j int) bool {
 		return peers[i].PeerID < peers[j].PeerID
 	})
 	return peers, nil
+}
+
+func (s *FilePeerStore) updateState(ctx context.Context, peerID string, state domain.PeerState) (domain.Peer, error) {
+	peers, err := s.List(ctx)
+	if err != nil {
+		return domain.Peer{}, err
+	}
+	for i := range peers {
+		if peers[i].PeerID != peerID {
+			continue
+		}
+		peers[i].State = state
+		peers[i].LastSeen = time.Now().UTC()
+		if err := s.write(peers); err != nil {
+			return domain.Peer{}, err
+		}
+		return peers[i], nil
+	}
+	return domain.Peer{}, domain.ErrPeerNotFound
 }
 
 func (s *FilePeerStore) write(peers []domain.Peer) error {

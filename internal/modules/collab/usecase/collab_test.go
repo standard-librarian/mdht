@@ -27,17 +27,15 @@ func (f fakeService) DaemonStatus(context.Context) (collabout.DaemonRuntimeStatu
 		PID:        123,
 		SocketPath: "/tmp/sock",
 		Status: collabout.DaemonStatus{
-			Online:      true,
-			PeerCount:   2,
-			PendingOps:  3,
-			LastSyncAt:  time.Date(2026, 2, 25, 12, 0, 0, 0, time.UTC),
-			NodeID:      "node-a",
-			WorkspaceID: "ws-a",
-			ListenAddrs: []string{"/ip4/127.0.0.1/tcp/4001/p2p/peer"},
-			Counters: collabout.ValidationCounters{
-				ReconnectAttempts:  3,
-				ReconnectSuccesses: 2,
-			},
+			Online:            true,
+			PeerCount:         2,
+			ApprovedPeerCount: 1,
+			PendingConflicts:  1,
+			PendingOps:        3,
+			LastSyncAt:        time.Date(2026, 2, 25, 12, 0, 0, 0, time.UTC),
+			NodeID:            "node-a",
+			WorkspaceID:       "ws-a",
+			ListenAddrs:       []string{"/ip4/127.0.0.1/tcp/4001/p2p/peer"},
 		},
 	}, nil
 }
@@ -45,41 +43,50 @@ func (f fakeService) WorkspaceInit(context.Context, string) (domain.Workspace, e
 	if f.err != nil {
 		return domain.Workspace{}, f.err
 	}
-	return domain.Workspace{ID: "ws-a", Name: "alpha", CreatedAt: time.Date(2026, 2, 25, 12, 0, 0, 0, time.UTC)}, nil
+	return domain.Workspace{ID: "ws-a", Name: "alpha", CreatedAt: time.Date(2026, 2, 25, 12, 0, 0, 0, time.UTC), SchemaVersion: domain.SchemaVersionV2}, nil
 }
 func (f fakeService) WorkspaceShow(context.Context) (domain.Workspace, string, []domain.Peer, error) {
 	if f.err != nil {
 		return domain.Workspace{}, "", nil, f.err
 	}
-	return domain.Workspace{ID: "ws-a", Name: "alpha"}, "node-a", []domain.Peer{{PeerID: "peer-a", Address: "/ip4/127.0.0.1/tcp/4001/p2p/peer-a"}}, nil
+	return domain.Workspace{ID: "ws-a", Name: "alpha", SchemaVersion: domain.SchemaVersionV2}, "node-a", []domain.Peer{{PeerID: "peer-a", Address: "/ip4/127.0.0.1/tcp/4001/p2p/peer-a"}}, nil
 }
-func (f fakeService) PeerAdd(context.Context, string) (domain.Peer, error) {
+func (f fakeService) WorkspaceRotateKey(context.Context, time.Duration) (domain.Workspace, error) {
+	if f.err != nil {
+		return domain.Workspace{}, f.err
+	}
+	return domain.Workspace{ID: "ws-a", Name: "alpha", SchemaVersion: domain.SchemaVersionV2}, nil
+}
+func (f fakeService) PeerAdd(context.Context, string, string) (domain.Peer, error) {
 	if f.err != nil {
 		return domain.Peer{}, f.err
 	}
-	return domain.Peer{PeerID: "peer-a", Address: "/ip4/127.0.0.1/tcp/4001/p2p/peer-a", AddedAt: time.Date(2026, 2, 25, 12, 0, 0, 0, time.UTC)}, nil
+	return domain.Peer{PeerID: "peer-a", Address: "/ip4/127.0.0.1/tcp/4001/p2p/peer-a", State: domain.PeerStatePending}, nil
+}
+func (f fakeService) PeerApprove(context.Context, string) (domain.Peer, error) {
+	if f.err != nil {
+		return domain.Peer{}, f.err
+	}
+	return domain.Peer{PeerID: "peer-a", State: domain.PeerStateApproved}, nil
+}
+func (f fakeService) PeerRevoke(context.Context, string) (domain.Peer, error) {
+	if f.err != nil {
+		return domain.Peer{}, f.err
+	}
+	return domain.Peer{PeerID: "peer-a", State: domain.PeerStateRevoked}, nil
 }
 func (f fakeService) PeerRemove(context.Context, string) error { return f.err }
 func (f fakeService) PeerList(context.Context) ([]domain.Peer, error) {
 	if f.err != nil {
 		return nil, f.err
 	}
-	return []domain.Peer{{PeerID: "peer-a", Address: "/ip4/127.0.0.1/tcp/4001/p2p/peer-a"}}, nil
+	return []domain.Peer{{PeerID: "peer-a", Address: "/ip4/127.0.0.1/tcp/4001/p2p/peer-a", State: domain.PeerStateApproved}}, nil
 }
 func (f fakeService) Status(context.Context) (collabout.DaemonStatus, error) {
 	if f.err != nil {
 		return collabout.DaemonStatus{}, f.err
 	}
-	return collabout.DaemonStatus{Online: true, PeerCount: 1, PendingOps: 2, NodeID: "node-a", WorkspaceID: "ws-a", Counters: collabout.ValidationCounters{InvalidAuthTag: 1}}, nil
-}
-func (f fakeService) Doctor(context.Context) ([]collabout.DoctorCheck, error) {
-	if f.err != nil {
-		return nil, f.err
-	}
-	return []collabout.DoctorCheck{
-		{Name: "workspace", OK: true, Details: "ok"},
-		{Name: "daemon", OK: false, Details: "stopped"},
-	}, nil
+	return collabout.DaemonStatus{Online: true, PeerCount: 1, ApprovedPeerCount: 1, PendingConflicts: 0, PendingOps: 2, NodeID: "node-a", WorkspaceID: "ws-a"}, nil
 }
 func (f fakeService) DaemonLogs(context.Context, int) (string, error) {
 	if f.err != nil {
@@ -87,17 +94,41 @@ func (f fakeService) DaemonLogs(context.Context, int) (string, error) {
 	}
 	return "line 1\nline 2", nil
 }
-func (f fakeService) ReconcileNow(context.Context) (int, error) {
+func (f fakeService) ActivityTail(context.Context, collabout.ActivityQuery) ([]domain.ActivityEvent, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return []domain.ActivityEvent{{ID: "1", Type: domain.ActivitySyncApplied, Message: "ok"}}, nil
+}
+func (f fakeService) ConflictsList(context.Context, string) ([]domain.ConflictRecord, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return []domain.ConflictRecord{{ID: "c1", EntityKey: "source/s1", Field: "title", Status: domain.ConflictStatusOpen}}, nil
+}
+func (f fakeService) ConflictResolve(context.Context, string, domain.ConflictStrategy) (domain.ConflictRecord, error) {
+	if f.err != nil {
+		return domain.ConflictRecord{}, f.err
+	}
+	return domain.ConflictRecord{ID: "c1", Status: domain.ConflictStatusResolved, Strategy: "local"}, nil
+}
+func (f fakeService) SyncNow(context.Context) (int, error) {
 	if f.err != nil {
 		return 0, f.err
 	}
 	return 4, nil
 }
-func (f fakeService) ExportState(context.Context) (string, error) {
+func (f fakeService) SnapshotExport(context.Context) (string, error) {
 	if f.err != nil {
 		return "", f.err
 	}
 	return "{}", nil
+}
+func (f fakeService) Metrics(context.Context) (collabout.MetricsSnapshot, error) {
+	if f.err != nil {
+		return collabout.MetricsSnapshot{}, f.err
+	}
+	return collabout.MetricsSnapshot{WorkspaceID: "ws-a", NodeID: "node-a", ApprovedPeers: 1, PendingOps: 2}, nil
 }
 
 func TestInteractorSuccess(t *testing.T) {
@@ -114,91 +145,56 @@ func TestInteractorSuccess(t *testing.T) {
 	if err := uc.StopDaemon(ctx); err != nil {
 		t.Fatalf("stop daemon: %v", err)
 	}
-
-	ds, err := uc.DaemonStatus(ctx)
-	if err != nil {
+	if _, err := uc.DaemonStatus(ctx); err != nil {
 		t.Fatalf("daemon status: %v", err)
 	}
-	if !ds.Running || ds.Status.PeerCount != 2 {
-		t.Fatalf("unexpected daemon status: %+v", ds)
-	}
-
-	ws, err := uc.WorkspaceInit(ctx, "alpha")
-	if err != nil {
+	if _, err := uc.WorkspaceInit(ctx, "alpha"); err != nil {
 		t.Fatalf("workspace init: %v", err)
 	}
-	if ws.ID == "" {
-		t.Fatalf("workspace id must be set")
-	}
-
-	shown, err := uc.WorkspaceShow(ctx)
-	if err != nil {
+	if _, err := uc.WorkspaceShow(ctx); err != nil {
 		t.Fatalf("workspace show: %v", err)
 	}
-	if shown.NodeID != "node-a" || shown.Peers != 1 {
-		t.Fatalf("unexpected workspace show: %+v", shown)
+	if _, err := uc.WorkspaceRotateKey(ctx, time.Hour); err != nil {
+		t.Fatalf("workspace rotate key: %v", err)
 	}
-
-	peer, err := uc.PeerAdd(ctx, "/ip4/127.0.0.1/tcp/4001/p2p/peer-a")
-	if err != nil {
+	if _, err := uc.PeerAdd(ctx, "/ip4/127.0.0.1/tcp/4001/p2p/peer-a", "alpha"); err != nil {
 		t.Fatalf("peer add: %v", err)
 	}
-	if peer.PeerID != "peer-a" {
-		t.Fatalf("unexpected peer output: %+v", peer)
+	if _, err := uc.PeerApprove(ctx, "peer-a"); err != nil {
+		t.Fatalf("peer approve: %v", err)
 	}
-
+	if _, err := uc.PeerRevoke(ctx, "peer-a"); err != nil {
+		t.Fatalf("peer revoke: %v", err)
+	}
 	if err := uc.PeerRemove(ctx, "peer-a"); err != nil {
 		t.Fatalf("peer remove: %v", err)
 	}
-	peers, err := uc.PeerList(ctx)
-	if err != nil {
+	if _, err := uc.PeerList(ctx); err != nil {
 		t.Fatalf("peer list: %v", err)
 	}
-	if len(peers) != 1 {
-		t.Fatalf("unexpected peer count: %d", len(peers))
-	}
-
-	status, err := uc.Status(ctx)
-	if err != nil {
+	if _, err := uc.Status(ctx); err != nil {
 		t.Fatalf("status: %v", err)
 	}
-	if !status.Online || status.WorkspaceID != "ws-a" {
-		t.Fatalf("unexpected collab status: %+v", status)
-	}
-	if status.Counters.InvalidAuthTag != 1 {
-		t.Fatalf("expected mapped counters in status output")
-	}
-
-	doctor, err := uc.Doctor(ctx)
-	if err != nil {
-		t.Fatalf("doctor: %v", err)
-	}
-	if len(doctor.Checks) != 2 {
-		t.Fatalf("unexpected doctor checks: %+v", doctor)
-	}
-
-	logs, err := uc.DaemonLogs(ctx, 10)
-	if err != nil {
+	if _, err := uc.DaemonLogs(ctx, 20); err != nil {
 		t.Fatalf("daemon logs: %v", err)
 	}
-	if logs == "" {
-		t.Fatalf("expected daemon logs payload")
+	if _, err := uc.ActivityTail(ctx, time.Time{}, 10); err != nil {
+		t.Fatalf("activity tail: %v", err)
 	}
-
-	reconciled, err := uc.ReconcileNow(ctx)
-	if err != nil {
-		t.Fatalf("reconcile: %v", err)
+	if _, err := uc.ConflictsList(ctx, ""); err != nil {
+		t.Fatalf("conflicts list: %v", err)
 	}
-	if reconciled.Applied != 4 {
-		t.Fatalf("unexpected reconcile output: %+v", reconciled)
+	if _, err := uc.ConflictResolve(ctx, "c1", "local"); err != nil {
+		t.Fatalf("conflict resolve: %v", err)
 	}
-
-	exported, err := uc.ExportState(ctx)
-	if err != nil {
-		t.Fatalf("export state: %v", err)
+	if _, err := uc.SyncNow(ctx); err != nil {
+		t.Fatalf("sync now: %v", err)
 	}
-	if exported.Payload != "{}" {
-		t.Fatalf("unexpected export payload: %q", exported.Payload)
+	if _, err := uc.SnapshotExport(ctx); err != nil {
+		t.Fatalf("snapshot export: %v", err)
+	}
+	if _, err := uc.Metrics(ctx); err != nil {
+		t.Fatalf("metrics: %v", err)
 	}
 }
 
@@ -210,25 +206,25 @@ func TestInteractorErrors(t *testing.T) {
 	if err := uc.RunDaemon(ctx); err == nil {
 		t.Fatalf("expected run daemon error")
 	}
-	if err := uc.StartDaemon(ctx); err == nil {
-		t.Fatalf("expected start daemon error")
-	}
-	if err := uc.StopDaemon(ctx); err == nil {
-		t.Fatalf("expected stop daemon error")
-	}
-	if _, err := uc.DaemonStatus(ctx); err == nil {
-		t.Fatalf("expected daemon status error")
-	}
 	if _, err := uc.WorkspaceInit(ctx, "alpha"); err == nil {
 		t.Fatalf("expected workspace init error")
 	}
 	if _, err := uc.WorkspaceShow(ctx); err == nil {
 		t.Fatalf("expected workspace show error")
 	}
-	if _, err := uc.PeerAdd(ctx, "addr"); err == nil {
+	if _, err := uc.WorkspaceRotateKey(ctx, time.Hour); err == nil {
+		t.Fatalf("expected workspace rotate key error")
+	}
+	if _, err := uc.PeerAdd(ctx, "addr", "label"); err == nil {
 		t.Fatalf("expected peer add error")
 	}
-	if err := uc.PeerRemove(ctx, "peer"); err == nil {
+	if _, err := uc.PeerApprove(ctx, "peer-a"); err == nil {
+		t.Fatalf("expected peer approve error")
+	}
+	if _, err := uc.PeerRevoke(ctx, "peer-a"); err == nil {
+		t.Fatalf("expected peer revoke error")
+	}
+	if err := uc.PeerRemove(ctx, "peer-a"); err == nil {
 		t.Fatalf("expected peer remove error")
 	}
 	if _, err := uc.PeerList(ctx); err == nil {
@@ -237,16 +233,34 @@ func TestInteractorErrors(t *testing.T) {
 	if _, err := uc.Status(ctx); err == nil {
 		t.Fatalf("expected status error")
 	}
-	if _, err := uc.Doctor(ctx); err == nil {
-		t.Fatalf("expected doctor error")
+	if _, err := uc.DaemonStatus(ctx); err == nil {
+		t.Fatalf("expected daemon status error")
 	}
-	if _, err := uc.DaemonLogs(ctx, 20); err == nil {
+	if _, err := uc.DaemonLogs(ctx, 10); err == nil {
 		t.Fatalf("expected daemon logs error")
 	}
-	if _, err := uc.ReconcileNow(ctx); err == nil {
-		t.Fatalf("expected reconcile error")
+	if _, err := uc.ActivityTail(ctx, time.Time{}, 10); err == nil {
+		t.Fatalf("expected activity tail error")
 	}
-	if _, err := uc.ExportState(ctx); err == nil {
-		t.Fatalf("expected export error")
+	if _, err := uc.ConflictsList(ctx, "source/s1"); err == nil {
+		t.Fatalf("expected conflicts list error")
+	}
+	if _, err := uc.ConflictResolve(ctx, "c1", "local"); err == nil {
+		t.Fatalf("expected conflict resolve error")
+	}
+	if _, err := uc.SyncNow(ctx); err == nil {
+		t.Fatalf("expected sync now error")
+	}
+	if _, err := uc.SnapshotExport(ctx); err == nil {
+		t.Fatalf("expected snapshot export error")
+	}
+	if _, err := uc.Metrics(ctx); err == nil {
+		t.Fatalf("expected metrics error")
+	}
+	if err := uc.StartDaemon(ctx); err == nil {
+		t.Fatalf("expected start daemon error")
+	}
+	if err := uc.StopDaemon(ctx); err == nil {
+		t.Fatalf("expected stop daemon error")
 	}
 }

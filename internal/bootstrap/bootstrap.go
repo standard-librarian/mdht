@@ -97,6 +97,8 @@ func New(cfg config.Config) (*App, error) {
 		collaboutadapter.NewFileDaemonStore(cfg.VaultPath),
 		collaboutadapter.NewJSONRPCServer(),
 		collaboutadapter.NewJSONRPCClient(),
+		collaboutadapter.NewFileActivityStore(cfg.VaultPath),
+		collaboutadapter.NewFileConflictStore(cfg.VaultPath),
 	))
 
 	return &App{

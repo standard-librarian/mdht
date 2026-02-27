@@ -2,6 +2,7 @@ package usecase
 
 import (
 	"context"
+	"time"
 
 	"mdht/internal/modules/collab/domain"
 	"mdht/internal/modules/collab/dto"
@@ -16,14 +17,20 @@ type servicePort interface {
 	DaemonStatus(ctx context.Context) (collabout.DaemonRuntimeStatus, error)
 	WorkspaceInit(ctx context.Context, name string) (domain.Workspace, error)
 	WorkspaceShow(ctx context.Context) (domain.Workspace, string, []domain.Peer, error)
-	PeerAdd(ctx context.Context, addr string) (domain.Peer, error)
+	WorkspaceRotateKey(ctx context.Context, gracePeriod time.Duration) (domain.Workspace, error)
+	PeerAdd(ctx context.Context, addr, label string) (domain.Peer, error)
+	PeerApprove(ctx context.Context, peerID string) (domain.Peer, error)
+	PeerRevoke(ctx context.Context, peerID string) (domain.Peer, error)
 	PeerRemove(ctx context.Context, peerID string) error
 	PeerList(ctx context.Context) ([]domain.Peer, error)
 	Status(ctx context.Context) (collabout.DaemonStatus, error)
-	Doctor(ctx context.Context) ([]collabout.DoctorCheck, error)
 	DaemonLogs(ctx context.Context, tail int) (string, error)
-	ReconcileNow(ctx context.Context) (int, error)
-	ExportState(ctx context.Context) (string, error)
+	ActivityTail(ctx context.Context, query collabout.ActivityQuery) ([]domain.ActivityEvent, error)
+	ConflictsList(ctx context.Context, entityKey string) ([]domain.ConflictRecord, error)
+	ConflictResolve(ctx context.Context, conflictID string, strategy domain.ConflictStrategy) (domain.ConflictRecord, error)
+	SyncNow(ctx context.Context) (int, error)
+	SnapshotExport(ctx context.Context) (string, error)
+	Metrics(ctx context.Context) (collabout.MetricsSnapshot, error)
 }
 
 type Interactor struct {
@@ -55,25 +62,7 @@ func (i *Interactor) DaemonStatus(ctx context.Context) (dto.DaemonStatusOutput, 
 		Running:    status.Running,
 		PID:        status.PID,
 		SocketPath: status.SocketPath,
-		Status: dto.StatusOutput{
-			Online:      status.Status.Online,
-			PeerCount:   status.Status.PeerCount,
-			PendingOps:  status.Status.PendingOps,
-			LastSyncAt:  status.Status.LastSyncAt,
-			NodeID:      status.Status.NodeID,
-			WorkspaceID: status.Status.WorkspaceID,
-			ListenAddrs: status.Status.ListenAddrs,
-			Counters: dto.ValidationCountersOutput{
-				InvalidAuthTag:      status.Status.Counters.InvalidAuthTag,
-				WorkspaceMismatch:   status.Status.Counters.WorkspaceMismatch,
-				UnauthenticatedPeer: status.Status.Counters.UnauthenticatedPeer,
-				DecodeErrors:        status.Status.Counters.DecodeErrors,
-				BroadcastSendErrors: status.Status.Counters.BroadcastSendErrors,
-				ReconcileSendErrors: status.Status.Counters.ReconcileSendErrors,
-				ReconnectAttempts:   status.Status.Counters.ReconnectAttempts,
-				ReconnectSuccesses:  status.Status.Counters.ReconnectSuccesses,
-			},
-		},
+		Status:     mapStatus(status.Status),
 	}, nil
 }
 
@@ -82,7 +71,7 @@ func (i *Interactor) WorkspaceInit(ctx context.Context, name string) (dto.Worksp
 	if err != nil {
 		return dto.WorkspaceOutput{}, err
 	}
-	return dto.WorkspaceOutput{ID: workspace.ID, Name: workspace.Name, CreatedAt: workspace.CreatedAt}, nil
+	return mapWorkspace(workspace), nil
 }
 
 func (i *Interactor) WorkspaceShow(ctx context.Context) (dto.WorkspaceShowOutput, error) {
@@ -91,18 +80,42 @@ func (i *Interactor) WorkspaceShow(ctx context.Context) (dto.WorkspaceShowOutput
 		return dto.WorkspaceShowOutput{}, err
 	}
 	return dto.WorkspaceShowOutput{
-		Workspace: dto.WorkspaceOutput{ID: workspace.ID, Name: workspace.Name, CreatedAt: workspace.CreatedAt},
+		Workspace: mapWorkspace(workspace),
 		NodeID:    nodeID,
 		Peers:     len(peers),
 	}, nil
 }
 
-func (i *Interactor) PeerAdd(ctx context.Context, addr string) (dto.PeerOutput, error) {
-	peer, err := i.svc.PeerAdd(ctx, addr)
+func (i *Interactor) WorkspaceRotateKey(ctx context.Context, gracePeriod time.Duration) (dto.WorkspaceOutput, error) {
+	workspace, err := i.svc.WorkspaceRotateKey(ctx, gracePeriod)
+	if err != nil {
+		return dto.WorkspaceOutput{}, err
+	}
+	return mapWorkspace(workspace), nil
+}
+
+func (i *Interactor) PeerAdd(ctx context.Context, addr, label string) (dto.PeerOutput, error) {
+	peer, err := i.svc.PeerAdd(ctx, addr, label)
 	if err != nil {
 		return dto.PeerOutput{}, err
 	}
-	return dto.PeerOutput{PeerID: peer.PeerID, Address: peer.Address, AddedAt: peer.AddedAt, LastError: peer.LastError}, nil
+	return mapPeer(peer), nil
+}
+
+func (i *Interactor) PeerApprove(ctx context.Context, peerID string) (dto.PeerOutput, error) {
+	peer, err := i.svc.PeerApprove(ctx, peerID)
+	if err != nil {
+		return dto.PeerOutput{}, err
+	}
+	return mapPeer(peer), nil
+}
+
+func (i *Interactor) PeerRevoke(ctx context.Context, peerID string) (dto.PeerOutput, error) {
+	peer, err := i.svc.PeerRevoke(ctx, peerID)
+	if err != nil {
+		return dto.PeerOutput{}, err
+	}
+	return mapPeer(peer), nil
 }
 
 func (i *Interactor) PeerRemove(ctx context.Context, peerID string) error {
@@ -116,7 +129,7 @@ func (i *Interactor) PeerList(ctx context.Context) ([]dto.PeerOutput, error) {
 	}
 	out := make([]dto.PeerOutput, 0, len(peers))
 	for _, item := range peers {
-		out = append(out, dto.PeerOutput{PeerID: item.PeerID, Address: item.Address, AddedAt: item.AddedAt, LastError: item.LastError})
+		out = append(out, mapPeer(item))
 	}
 	return out, nil
 }
@@ -126,14 +139,127 @@ func (i *Interactor) Status(ctx context.Context) (dto.StatusOutput, error) {
 	if err != nil {
 		return dto.StatusOutput{}, err
 	}
+	return mapStatus(status), nil
+}
+
+func (i *Interactor) DaemonLogs(ctx context.Context, tail int) (string, error) {
+	return i.svc.DaemonLogs(ctx, tail)
+}
+
+func (i *Interactor) ActivityTail(ctx context.Context, since time.Time, limit int) ([]dto.ActivityOutput, error) {
+	events, err := i.svc.ActivityTail(ctx, collabout.ActivityQuery{Since: since, Limit: limit})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]dto.ActivityOutput, 0, len(events))
+	for _, event := range events {
+		out = append(out, dto.ActivityOutput{
+			ID:         event.ID,
+			OccurredAt: event.OccurredAt,
+			Type:       string(event.Type),
+			Message:    event.Message,
+			Fields:     event.Fields,
+		})
+	}
+	return out, nil
+}
+
+func (i *Interactor) ConflictsList(ctx context.Context, entityKey string) ([]dto.ConflictOutput, error) {
+	conflicts, err := i.svc.ConflictsList(ctx, entityKey)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]dto.ConflictOutput, 0, len(conflicts))
+	for _, conflict := range conflicts {
+		out = append(out, mapConflict(conflict))
+	}
+	return out, nil
+}
+
+func (i *Interactor) ConflictResolve(ctx context.Context, conflictID, strategy string) (dto.ConflictOutput, error) {
+	record, err := i.svc.ConflictResolve(ctx, conflictID, domain.ConflictStrategy(strategy))
+	if err != nil {
+		return dto.ConflictOutput{}, err
+	}
+	return mapConflict(record), nil
+}
+
+func (i *Interactor) SyncNow(ctx context.Context) (dto.ReconcileOutput, error) {
+	applied, err := i.svc.SyncNow(ctx)
+	if err != nil {
+		return dto.ReconcileOutput{}, err
+	}
+	return dto.ReconcileOutput{Applied: applied}, nil
+}
+
+func (i *Interactor) SnapshotExport(ctx context.Context) (dto.ExportStateOutput, error) {
+	payload, err := i.svc.SnapshotExport(ctx)
+	if err != nil {
+		return dto.ExportStateOutput{}, err
+	}
+	return dto.ExportStateOutput{Payload: payload}, nil
+}
+
+func (i *Interactor) Metrics(ctx context.Context) (dto.MetricsOutput, error) {
+	metrics, err := i.svc.Metrics(ctx)
+	if err != nil {
+		return dto.MetricsOutput{}, err
+	}
+	return dto.MetricsOutput{
+		WorkspaceID:      metrics.WorkspaceID,
+		NodeID:           metrics.NodeID,
+		ApprovedPeers:    metrics.ApprovedPeers,
+		PendingConflicts: metrics.PendingConflicts,
+		PendingOps:       metrics.PendingOps,
+		LastSyncAt:       metrics.LastSyncAt,
+		CollectedAt:      metrics.CollectedAt,
+		Counters: dto.ValidationCountersOutput{
+			InvalidAuthTag:      metrics.Counters.InvalidAuthTag,
+			WorkspaceMismatch:   metrics.Counters.WorkspaceMismatch,
+			UnauthenticatedPeer: metrics.Counters.UnauthenticatedPeer,
+			DecodeErrors:        metrics.Counters.DecodeErrors,
+			BroadcastSendErrors: metrics.Counters.BroadcastSendErrors,
+			ReconcileSendErrors: metrics.Counters.ReconcileSendErrors,
+			ReconnectAttempts:   metrics.Counters.ReconnectAttempts,
+			ReconnectSuccesses:  metrics.Counters.ReconnectSuccesses,
+		},
+	}, nil
+}
+
+func mapWorkspace(workspace domain.Workspace) dto.WorkspaceOutput {
+	return dto.WorkspaceOutput{
+		ID:            workspace.ID,
+		Name:          workspace.Name,
+		CreatedAt:     workspace.CreatedAt,
+		SchemaVersion: workspace.SchemaVersion,
+	}
+}
+
+func mapPeer(peer domain.Peer) dto.PeerOutput {
+	return dto.PeerOutput{
+		PeerID:    peer.PeerID,
+		Address:   peer.Address,
+		Label:     peer.Label,
+		State:     string(peer.State),
+		FirstSeen: peer.FirstSeen,
+		LastSeen:  peer.LastSeen,
+		AddedAt:   peer.AddedAt,
+		LastError: peer.LastError,
+	}
+}
+
+func mapStatus(status collabout.DaemonStatus) dto.StatusOutput {
 	return dto.StatusOutput{
-		Online:      status.Online,
-		PeerCount:   status.PeerCount,
-		PendingOps:  status.PendingOps,
-		LastSyncAt:  status.LastSyncAt,
-		NodeID:      status.NodeID,
-		WorkspaceID: status.WorkspaceID,
-		ListenAddrs: status.ListenAddrs,
+		Online:            status.Online,
+		PeerCount:         status.PeerCount,
+		ApprovedPeerCount: status.ApprovedPeerCount,
+		PendingConflicts:  status.PendingConflicts,
+		PendingOps:        status.PendingOps,
+		LastSyncAt:        status.LastSyncAt,
+		NodeID:            status.NodeID,
+		WorkspaceID:       status.WorkspaceID,
+		ListenAddrs:       status.ListenAddrs,
+		MetricsAddress:    status.MetricsAddress,
 		Counters: dto.ValidationCountersOutput{
 			InvalidAuthTag:      status.Counters.InvalidAuthTag,
 			WorkspaceMismatch:   status.Counters.WorkspaceMismatch,
@@ -144,37 +270,21 @@ func (i *Interactor) Status(ctx context.Context) (dto.StatusOutput, error) {
 			ReconnectAttempts:   status.Counters.ReconnectAttempts,
 			ReconnectSuccesses:  status.Counters.ReconnectSuccesses,
 		},
-	}, nil
+	}
 }
 
-func (i *Interactor) Doctor(ctx context.Context) (dto.DoctorOutput, error) {
-	checks, err := i.svc.Doctor(ctx)
-	if err != nil {
-		return dto.DoctorOutput{}, err
+func mapConflict(conflict domain.ConflictRecord) dto.ConflictOutput {
+	return dto.ConflictOutput{
+		ID:          conflict.ID,
+		EntityKey:   conflict.EntityKey,
+		Field:       conflict.Field,
+		LocalValue:  conflict.LocalValue,
+		RemoteValue: conflict.RemoteValue,
+		Status:      string(conflict.Status),
+		Strategy:    conflict.Strategy,
+		MergedValue: conflict.MergedValue,
+		CreatedAt:   conflict.CreatedAt,
+		ResolvedAt:  conflict.ResolvedAt,
+		ResolvedBy:  conflict.ResolvedBy,
 	}
-	out := make([]dto.DoctorCheckOutput, 0, len(checks))
-	for _, check := range checks {
-		out = append(out, dto.DoctorCheckOutput{Name: check.Name, OK: check.OK, Details: check.Details})
-	}
-	return dto.DoctorOutput{Checks: out}, nil
-}
-
-func (i *Interactor) DaemonLogs(ctx context.Context, tail int) (string, error) {
-	return i.svc.DaemonLogs(ctx, tail)
-}
-
-func (i *Interactor) ReconcileNow(ctx context.Context) (dto.ReconcileOutput, error) {
-	applied, err := i.svc.ReconcileNow(ctx)
-	if err != nil {
-		return dto.ReconcileOutput{}, err
-	}
-	return dto.ReconcileOutput{Applied: applied}, nil
-}
-
-func (i *Interactor) ExportState(ctx context.Context) (dto.ExportStateOutput, error) {
-	payload, err := i.svc.ExportState(ctx)
-	if err != nil {
-		return dto.ExportStateOutput{}, err
-	}
-	return dto.ExportStateOutput{Payload: payload}, nil
 }

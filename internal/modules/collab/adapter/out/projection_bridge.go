@@ -35,9 +35,9 @@ func NewVaultProjectionBridge(vaultPath string) *VaultProjectionBridge {
 	return &VaultProjectionBridge{vaultPath: vaultPath}
 }
 
-func (b *VaultProjectionBridge) Extract(ctx context.Context, workspaceID, nodeID string, now time.Time) ([]domain.OpEnvelope, error) {
+func (b *VaultProjectionBridge) Extract(ctx context.Context, workspaceID, nodeID, keyID string, now time.Time) ([]domain.OpEnvelope, error) {
 	_ = ctx
-	opBuilder := newOpBuilder(workspaceID, nodeID, now)
+	opBuilder := newOpBuilder(workspaceID, nodeID, keyID, now)
 
 	sourceOps, err := b.extractSourceOps(opBuilder)
 	if err != nil {
@@ -88,13 +88,14 @@ func (b *VaultProjectionBridge) Apply(_ context.Context, state domain.CRDTState)
 
 type opBuilder struct {
 	workspaceID string
+	keyID       string
 	nodeID      string
 	wall        int64
 	counter     int64
 }
 
-func newOpBuilder(workspaceID, nodeID string, now time.Time) *opBuilder {
-	return &opBuilder{workspaceID: workspaceID, nodeID: nodeID, wall: now.UTC().UnixMilli()}
+func newOpBuilder(workspaceID, nodeID, keyID string, now time.Time) *opBuilder {
+	return &opBuilder{workspaceID: workspaceID, keyID: keyID, nodeID: nodeID, wall: now.UTC().UnixMilli()}
 }
 
 func (b *opBuilder) make(entityKey string, kind domain.OpKind, payload any) (domain.OpEnvelope, error) {
@@ -106,13 +107,15 @@ func (b *opBuilder) make(entityKey string, kind domain.OpKind, payload any) (dom
 	b.counter++
 	opID := hashHex(entityKey + "|" + string(kind) + "|" + string(rawPayload))
 	return domain.OpEnvelope{
-		WorkspaceID:  b.workspaceID,
-		NodeID:       b.nodeID,
-		EntityKey:    entityKey,
-		OpID:         opID,
-		HLCTimestamp: hlc.String(),
-		OpKind:       kind,
-		Payload:      rawPayload,
+		WorkspaceID:    b.workspaceID,
+		WorkspaceKeyID: b.keyID,
+		NodeID:         b.nodeID,
+		EntityKey:      entityKey,
+		OpID:           opID,
+		HLCTimestamp:   hlc.String(),
+		OpKind:         kind,
+		Payload:        rawPayload,
+		SchemaVersion:  domain.SchemaVersionV2,
 	}, nil
 }
 

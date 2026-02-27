@@ -19,12 +19,79 @@ var (
 	ErrInvalidWorkspaceName    = errors.New("workspace name is invalid")
 	ErrInvalidPeerAddress      = errors.New("peer address is invalid")
 	ErrPeerNotFound            = errors.New("peer not found")
+	ErrPeerNotApproved         = errors.New("peer is not approved")
 	ErrInvalidAuthTag          = errors.New("invalid auth tag")
 	ErrWorkspaceMismatch       = errors.New("workspace mismatch")
 	ErrUnknownOpKind           = errors.New("unknown op kind")
 	ErrDaemonNotRunning        = errors.New("collab daemon is not running")
 	ErrDaemonStartFailed       = errors.New("collab daemon start failed")
+	ErrConflictNotFound        = errors.New("conflict not found")
+	ErrConflictStrategyInvalid = errors.New("conflict strategy is invalid")
+	ErrMigrationFailed         = errors.New("collab migration failed")
 )
+
+const (
+	SchemaVersionV2 = 2
+)
+
+type ErrorCode string
+
+const (
+	ErrorWorkspaceUninitialized ErrorCode = "ERR_WORKSPACE_UNINITIALIZED"
+	ErrorPeerNotApproved        ErrorCode = "ERR_PEER_NOT_APPROVED"
+	ErrorAuthInvalid            ErrorCode = "ERR_AUTH_INVALID"
+	ErrorWorkspaceMismatch      ErrorCode = "ERR_WORKSPACE_MISMATCH"
+	ErrorConflictNotFound       ErrorCode = "ERR_CONFLICT_NOT_FOUND"
+	ErrorConflictStrategy       ErrorCode = "ERR_CONFLICT_STRATEGY_INVALID"
+	ErrorDaemonNotRunning       ErrorCode = "ERR_DAEMON_NOT_RUNNING"
+	ErrorMigrationFailed        ErrorCode = "ERR_MIGRATION_FAILED"
+)
+
+type CodedError struct {
+	Code    ErrorCode `json:"code"`
+	Message string    `json:"message"`
+}
+
+func (e CodedError) Error() string {
+	if strings.TrimSpace(e.Message) == "" {
+		return string(e.Code)
+	}
+	return string(e.Code) + ": " + e.Message
+}
+
+func NewCodedError(code ErrorCode, message string) error {
+	return CodedError{Code: code, Message: message}
+}
+
+func ErrorCodeFromError(err error) ErrorCode {
+	if err == nil {
+		return ""
+	}
+	var coded CodedError
+	if errors.As(err, &coded) {
+		return coded.Code
+	}
+	switch {
+	case errors.Is(err, ErrWorkspaceNotInitialized):
+		return ErrorWorkspaceUninitialized
+	case errors.Is(err, ErrPeerNotApproved):
+		return ErrorPeerNotApproved
+	case errors.Is(err, ErrInvalidAuthTag):
+		return ErrorAuthInvalid
+	case errors.Is(err, ErrWorkspaceMismatch):
+		return ErrorWorkspaceMismatch
+	case errors.Is(err, ErrConflictNotFound):
+		return ErrorConflictNotFound
+	case errors.Is(err, ErrConflictStrategyInvalid):
+		return ErrorConflictStrategy
+	case errors.Is(err, ErrDaemonNotRunning):
+		return ErrorDaemonNotRunning
+	case errors.Is(err, ErrMigrationFailed):
+		return ErrorMigrationFailed
+	default:
+		return ""
+	}
+}
 
 type OpKind string
 
@@ -48,9 +115,10 @@ func (k OpKind) Validate() error {
 }
 
 type Workspace struct {
-	ID        string    `json:"id"`
-	Name      string    `json:"name"`
-	CreatedAt time.Time `json:"created_at"`
+	ID            string    `json:"id"`
+	Name          string    `json:"name"`
+	CreatedAt     time.Time `json:"created_at"`
+	SchemaVersion int       `json:"schema_version"`
 }
 
 func (w Workspace) Validate() error {
@@ -59,6 +127,12 @@ func (w Workspace) Validate() error {
 	}
 	if strings.TrimSpace(w.ID) == "" {
 		return fmt.Errorf("workspace id is required")
+	}
+	if w.SchemaVersion == 0 {
+		w.SchemaVersion = SchemaVersionV2
+	}
+	if w.SchemaVersion != SchemaVersionV2 {
+		return fmt.Errorf("unsupported workspace schema version: %d", w.SchemaVersion)
 	}
 	return nil
 }
@@ -71,8 +145,112 @@ type NodeIdentity struct {
 type Peer struct {
 	PeerID    string    `json:"peer_id"`
 	Address   string    `json:"address"`
+	Label     string    `json:"label,omitempty"`
+	State     PeerState `json:"state"`
+	FirstSeen time.Time `json:"first_seen"`
+	LastSeen  time.Time `json:"last_seen"`
 	AddedAt   time.Time `json:"added_at"`
 	LastError string    `json:"last_error,omitempty"`
+}
+
+type PeerState string
+
+const (
+	PeerStatePending  PeerState = "pending"
+	PeerStateApproved PeerState = "approved"
+	PeerStateRevoked  PeerState = "revoked"
+)
+
+func (p Peer) IsApproved() bool {
+	return p.State == PeerStateApproved
+}
+
+type KeyRecord struct {
+	ID        string    `json:"id"`
+	KeyBase64 string    `json:"key_base64"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+type KeyRing struct {
+	ActiveKeyID string      `json:"active_key_id"`
+	Keys        []KeyRecord `json:"keys"`
+	GraceUntil  time.Time   `json:"grace_until,omitempty"`
+}
+
+func (k KeyRing) ResolveKey(keyID string, now time.Time) ([]byte, error) {
+	for _, item := range k.Keys {
+		if item.ID != keyID {
+			continue
+		}
+		if keyID != k.ActiveKeyID && !k.GraceUntil.IsZero() && now.UTC().After(k.GraceUntil.UTC()) {
+			return nil, ErrInvalidAuthTag
+		}
+		return RandomWorkspaceKey(item.KeyBase64)
+	}
+	return nil, ErrInvalidAuthTag
+}
+
+type ActivityEventType string
+
+const (
+	ActivityPeerConnected   ActivityEventType = "peer_connected"
+	ActivityPeerRejected    ActivityEventType = "peer_rejected"
+	ActivitySyncApplied     ActivityEventType = "sync_applied"
+	ActivityConflictCreated ActivityEventType = "conflict_created"
+	ActivityConflictSolved  ActivityEventType = "conflict_resolved"
+	ActivityKeyRotated      ActivityEventType = "key_rotated"
+	ActivityMigration       ActivityEventType = "migration"
+)
+
+type ActivityEvent struct {
+	ID         string            `json:"id"`
+	OccurredAt time.Time         `json:"occurred_at"`
+	Type       ActivityEventType `json:"type"`
+	Message    string            `json:"message"`
+	Fields     map[string]string `json:"fields,omitempty"`
+}
+
+type ConflictStatus string
+
+const (
+	ConflictStatusOpen     ConflictStatus = "open"
+	ConflictStatusResolved ConflictStatus = "resolved"
+)
+
+type ConflictStrategy string
+
+const (
+	ConflictStrategyLocal  ConflictStrategy = "local"
+	ConflictStrategyRemote ConflictStrategy = "remote"
+	ConflictStrategyMerge  ConflictStrategy = "merge"
+)
+
+func (s ConflictStrategy) Validate() error {
+	switch s {
+	case ConflictStrategyLocal, ConflictStrategyRemote, ConflictStrategyMerge:
+		return nil
+	default:
+		return ErrConflictStrategyInvalid
+	}
+}
+
+type ConflictRecord struct {
+	ID            string         `json:"id"`
+	EntityKey     string         `json:"entity_key"`
+	Field         string         `json:"field"`
+	LocalValue    string         `json:"local_value"`
+	RemoteValue   string         `json:"remote_value"`
+	Status        ConflictStatus `json:"status"`
+	Strategy      string         `json:"strategy,omitempty"`
+	MergedValue   string         `json:"merged_value,omitempty"`
+	CreatedAt     time.Time      `json:"created_at"`
+	ResolvedAt    time.Time      `json:"resolved_at,omitempty"`
+	SourceNodeID  string         `json:"source_node_id,omitempty"`
+	ResolvedBy    string         `json:"resolved_by,omitempty"`
+	ResolutionOp  string         `json:"resolution_op,omitempty"`
+	WorkspaceID   string         `json:"workspace_id,omitempty"`
+	WorkspaceKey  string         `json:"workspace_key_id,omitempty"`
+	SchemaVersion int            `json:"schema_version"`
 }
 
 type HLC struct {
@@ -130,19 +308,25 @@ func NextHLC(now time.Time, last HLC, nodeID string) HLC {
 }
 
 type OpEnvelope struct {
-	WorkspaceID  string          `json:"workspace_id"`
-	NodeID       string          `json:"node_id"`
-	EntityKey    string          `json:"entity_key"`
-	OpID         string          `json:"op_id"`
-	HLCTimestamp string          `json:"hlc_timestamp"`
-	OpKind       OpKind          `json:"op_kind"`
-	Payload      json.RawMessage `json:"payload"`
-	AuthTag      string          `json:"auth_tag"`
+	WorkspaceID    string          `json:"workspace_id"`
+	WorkspaceKeyID string          `json:"workspace_key_id"`
+	NodeID         string          `json:"node_id"`
+	PeerID         string          `json:"peer_id,omitempty"`
+	EntityKey      string          `json:"entity_key"`
+	OpID           string          `json:"op_id"`
+	HLCTimestamp   string          `json:"hlc_timestamp"`
+	OpKind         OpKind          `json:"op_kind"`
+	Payload        json.RawMessage `json:"payload"`
+	AuthTag        string          `json:"auth_tag"`
+	SchemaVersion  int             `json:"schema_version"`
 }
 
 func (o OpEnvelope) Validate() error {
 	if o.WorkspaceID == "" {
 		return fmt.Errorf("workspace_id is required")
+	}
+	if strings.TrimSpace(o.WorkspaceKeyID) == "" {
+		return fmt.Errorf("workspace_key_id is required")
 	}
 	if o.NodeID == "" {
 		return fmt.Errorf("node_id is required")
@@ -158,6 +342,9 @@ func (o OpEnvelope) Validate() error {
 	}
 	if o.HLCTimestamp == "" {
 		return fmt.Errorf("hlc_timestamp is required")
+	}
+	if o.SchemaVersion != SchemaVersionV2 {
+		return fmt.Errorf("unsupported schema version: %d", o.SchemaVersion)
 	}
 	return nil
 }
@@ -193,12 +380,13 @@ type EntityState struct {
 }
 
 type CRDTState struct {
-	Entities     map[string]EntityState `json:"entities"`
-	AppliedOps   map[string]struct{}    `json:"applied_ops"`
-	LastApplied  HLC                    `json:"last_applied"`
-	LastSyncAt   time.Time              `json:"last_sync_at"`
-	PendingOps   int                    `json:"pending_ops"`
-	AppliedCount int64                  `json:"applied_count"`
+	SchemaVersion int                    `json:"schema_version"`
+	Entities      map[string]EntityState `json:"entities"`
+	AppliedOps    map[string]struct{}    `json:"applied_ops"`
+	LastApplied   HLC                    `json:"last_applied"`
+	LastSyncAt    time.Time              `json:"last_sync_at"`
+	PendingOps    int                    `json:"pending_ops"`
+	AppliedCount  int64                  `json:"applied_count"`
 }
 
 type RegisterPayload struct {
@@ -224,7 +412,11 @@ type DeleteSequencePayload struct {
 }
 
 func NewCRDTState() CRDTState {
-	return CRDTState{Entities: map[string]EntityState{}, AppliedOps: map[string]struct{}{}}
+	return CRDTState{
+		SchemaVersion: SchemaVersionV2,
+		Entities:      map[string]EntityState{},
+		AppliedOps:    map[string]struct{}{},
+	}
 }
 
 func (s *CRDTState) Clone() CRDTState {
@@ -236,6 +428,9 @@ func (s *CRDTState) Clone() CRDTState {
 	}
 	if cloned.AppliedOps == nil {
 		cloned.AppliedOps = map[string]struct{}{}
+	}
+	if cloned.SchemaVersion == 0 {
+		cloned.SchemaVersion = SchemaVersionV2
 	}
 	return cloned
 }

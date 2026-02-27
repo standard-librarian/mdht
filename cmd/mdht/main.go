@@ -535,8 +535,9 @@ func newCollabCmd(vaultPath *string) *cobra.Command {
 
 	daemon := &cobra.Command{Use: "daemon", Short: "Manage collab daemon lifecycle"}
 	daemon.AddCommand(&cobra.Command{
-		Use:   "run",
-		Short: "Run collab daemon in foreground",
+		Use:    "__run",
+		Short:  "Run collab daemon in foreground (internal)",
+		Hidden: true,
 		RunE: func(_ *cobra.Command, _ []string) error {
 			app, err := loadApp(*vaultPath)
 			if err != nil {
@@ -598,6 +599,7 @@ func newCollabCmd(vaultPath *string) *cobra.Command {
 		},
 	})
 	var daemonLogTail int
+	var daemonLogsJSON bool
 	daemonLogs := &cobra.Command{
 		Use:   "logs",
 		Short: "Show collab daemon logs",
@@ -610,15 +612,23 @@ func newCollabCmd(vaultPath *string) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			_, _ = fmt.Fprintln(cmd.OutOrStdout(), payload)
+			if daemonLogsJSON {
+				lines := strings.Split(strings.TrimSpace(payload), "\n")
+				encoded, _ := json.Marshal(lines)
+				_, _ = fmt.Fprintln(cmd.OutOrStdout(), string(encoded))
+			} else {
+				_, _ = fmt.Fprintln(cmd.OutOrStdout(), payload)
+			}
 			return nil
 		},
 	}
 	daemonLogs.Flags().IntVar(&daemonLogTail, "tail", 200, "log lines to show from the end")
+	daemonLogs.Flags().BoolVar(&daemonLogsJSON, "json", false, "output daemon logs as JSON array")
 	daemon.AddCommand(daemonLogs)
 	collab.AddCommand(daemon)
 
 	var workspaceName string
+	var workspaceGracePeriod time.Duration
 	workspace := &cobra.Command{Use: "workspace", Short: "Manage collab workspace"}
 	initCmd := &cobra.Command{
 		Use:   "init --name <name>",
@@ -657,9 +667,28 @@ func newCollabCmd(vaultPath *string) *cobra.Command {
 			return nil
 		},
 	})
+	rotateKeyCmd := &cobra.Command{
+		Use:   "rotate-key",
+		Short: "Rotate workspace key",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			app, err := loadApp(*vaultPath)
+			if err != nil {
+				return err
+			}
+			out, err := app.CollabCLI.WorkspaceRotateKey(context.Background(), workspaceGracePeriod)
+			if err != nil {
+				return err
+			}
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "workspace key rotated: %s (%s)\n", out.Name, out.ID)
+			return nil
+		},
+	}
+	rotateKeyCmd.Flags().DurationVar(&workspaceGracePeriod, "grace-period", 0, "rotation grace period, e.g. 1h")
+	workspace.AddCommand(rotateKeyCmd)
 	collab.AddCommand(workspace)
 
-	var peerAddr, peerID string
+	var peerAddr, peerID, peerLabel string
+	var peerListJSON bool
 	peer := &cobra.Command{Use: "peer", Short: "Manage collab peers"}
 	addPeer := &cobra.Command{
 		Use:   "add --addr <multiaddr>",
@@ -672,16 +701,59 @@ func newCollabCmd(vaultPath *string) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			out, err := app.CollabCLI.PeerAdd(context.Background(), peerAddr)
+			out, err := app.CollabCLI.PeerAdd(context.Background(), peerAddr, peerLabel)
 			if err != nil {
 				return err
 			}
-			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "peer added: %s %s\n", out.PeerID, out.Address)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "peer added: %s %s state=%s\n", out.PeerID, out.Address, out.State)
 			return nil
 		},
 	}
 	addPeer.Flags().StringVar(&peerAddr, "addr", "", "peer multiaddr")
+	addPeer.Flags().StringVar(&peerLabel, "label", "", "peer label")
 	peer.AddCommand(addPeer)
+	approvePeer := &cobra.Command{
+		Use:   "approve --peer-id <id>",
+		Short: "Approve a configured peer",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if strings.TrimSpace(peerID) == "" {
+				return fmt.Errorf("--peer-id is required")
+			}
+			app, err := loadApp(*vaultPath)
+			if err != nil {
+				return err
+			}
+			out, err := app.CollabCLI.PeerApprove(context.Background(), peerID)
+			if err != nil {
+				return err
+			}
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "peer approved: %s state=%s\n", out.PeerID, out.State)
+			return nil
+		},
+	}
+	approvePeer.Flags().StringVar(&peerID, "peer-id", "", "peer id")
+	peer.AddCommand(approvePeer)
+	revokePeer := &cobra.Command{
+		Use:   "revoke --peer-id <id>",
+		Short: "Revoke a configured peer",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if strings.TrimSpace(peerID) == "" {
+				return fmt.Errorf("--peer-id is required")
+			}
+			app, err := loadApp(*vaultPath)
+			if err != nil {
+				return err
+			}
+			out, err := app.CollabCLI.PeerRevoke(context.Background(), peerID)
+			if err != nil {
+				return err
+			}
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "peer revoked: %s state=%s\n", out.PeerID, out.State)
+			return nil
+		},
+	}
+	revokePeer.Flags().StringVar(&peerID, "peer-id", "", "peer id")
+	peer.AddCommand(revokePeer)
 	removePeer := &cobra.Command{
 		Use:   "remove --peer-id <id>",
 		Short: "Remove a configured peer",
@@ -702,7 +774,7 @@ func newCollabCmd(vaultPath *string) *cobra.Command {
 	}
 	removePeer.Flags().StringVar(&peerID, "peer-id", "", "peer id")
 	peer.AddCommand(removePeer)
-	peer.AddCommand(&cobra.Command{
+	peerList := &cobra.Command{
 		Use:   "list",
 		Short: "List configured peers",
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -718,15 +790,23 @@ func newCollabCmd(vaultPath *string) *cobra.Command {
 				_, _ = fmt.Fprintln(cmd.OutOrStdout(), "no peers configured")
 				return nil
 			}
+			if peerListJSON {
+				encoded, _ := json.Marshal(out)
+				_, _ = fmt.Fprintln(cmd.OutOrStdout(), string(encoded))
+				return nil
+			}
 			for _, item := range out {
-				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\n", item.PeerID, item.Address)
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%s\t%s\n", item.PeerID, item.State, item.Label, item.Address)
 			}
 			return nil
 		},
-	})
+	}
+	peerList.Flags().BoolVar(&peerListJSON, "json", false, "output peers as JSON")
+	peer.AddCommand(peerList)
 	collab.AddCommand(peer)
 
-	collab.AddCommand(&cobra.Command{
+	var statusJSON bool
+	statusCmd := &cobra.Command{
 		Use:   "status",
 		Short: "Show collab runtime status",
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -738,9 +818,17 @@ func newCollabCmd(vaultPath *string) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "online=%t peers=%d pending_ops=%d workspace=%s node=%s\n", status.Online, status.PeerCount, status.PendingOps, status.WorkspaceID, status.NodeID)
+			if statusJSON {
+				encoded, _ := json.Marshal(status)
+				_, _ = fmt.Fprintln(cmd.OutOrStdout(), string(encoded))
+				return nil
+			}
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "online=%t peers=%d approved_peers=%d pending_conflicts=%d pending_ops=%d workspace=%s node=%s\n", status.Online, status.PeerCount, status.ApprovedPeerCount, status.PendingConflicts, status.PendingOps, status.WorkspaceID, status.NodeID)
 			if !status.LastSyncAt.IsZero() {
 				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "last_sync=%s\n", status.LastSyncAt.Format(time.RFC3339))
+			}
+			if status.MetricsAddress != "" {
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "metrics=%s\n", status.MetricsAddress)
 			}
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "counters invalid_auth=%d workspace_mismatch=%d unauthenticated=%d decode_errors=%d reconnect_attempts=%d reconnect_successes=%d\n",
 				status.Counters.InvalidAuthTag,
@@ -752,66 +840,159 @@ func newCollabCmd(vaultPath *string) *cobra.Command {
 			)
 			return nil
 		},
-	})
+	}
+	statusCmd.Flags().BoolVar(&statusJSON, "json", false, "output status as JSON")
+	collab.AddCommand(statusCmd)
 
-	collab.AddCommand(&cobra.Command{
-		Use:   "doctor",
-		Short: "Run collaboration health checks",
+	var activitySince time.Duration
+	var activityLimit int
+	activity := &cobra.Command{Use: "activity", Short: "Read collaboration activity"}
+	activityTail := &cobra.Command{
+		Use:   "tail",
+		Short: "Tail collaboration activity",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			app, err := loadApp(*vaultPath)
 			if err != nil {
 				return err
 			}
-			out, err := app.CollabCLI.Doctor(context.Background())
+			since := time.Time{}
+			if activitySince > 0 {
+				since = time.Now().UTC().Add(-activitySince)
+			}
+			events, err := app.CollabCLI.ActivityTail(context.Background(), since, activityLimit)
 			if err != nil {
 				return err
 			}
-			exitErr := false
-			for _, check := range out.Checks {
-				marker := "OK"
-				if !check.OK {
-					marker = "FAIL"
-					exitErr = true
-				}
-				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "[%s] %s: %s\n", marker, check.Name, check.Details)
+			if len(events) == 0 {
+				_, _ = fmt.Fprintln(cmd.OutOrStdout(), "no activity")
+				return nil
 			}
-			if exitErr {
-				return fmt.Errorf("collab doctor found failing checks")
+			for _, event := range events {
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s %s %s\n", event.OccurredAt.Format(time.RFC3339), event.Type, event.Message)
 			}
 			return nil
 		},
-	})
+	}
+	activityTail.Flags().DurationVar(&activitySince, "since", 0, "filter events newer than duration (e.g. 30m)")
+	activityTail.Flags().IntVar(&activityLimit, "limit", 100, "max number of events")
+	activity.AddCommand(activityTail)
+	collab.AddCommand(activity)
 
-	collab.AddCommand(&cobra.Command{
-		Use:   "reconcile",
-		Short: "Trigger anti-entropy reconciliation",
+	var conflictsEntity string
+	var conflictID, conflictStrategy string
+	conflicts := &cobra.Command{Use: "conflicts", Short: "Inspect and resolve conflicts"}
+	conflictsList := &cobra.Command{
+		Use:   "list",
+		Short: "List open/resolved conflicts",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			app, err := loadApp(*vaultPath)
 			if err != nil {
 				return err
 			}
-			out, err := app.CollabCLI.ReconcileNow(context.Background())
+			items, err := app.CollabCLI.ConflictsList(context.Background(), conflictsEntity)
 			if err != nil {
 				return err
 			}
-			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "reconciled ops=%d\n", out.Applied)
+			if len(items) == 0 {
+				_, _ = fmt.Fprintln(cmd.OutOrStdout(), "no conflicts")
+				return nil
+			}
+			for _, item := range items {
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%s\t%s\n", item.ID, item.Status, item.EntityKey, item.Field)
+			}
 			return nil
 		},
-	})
+	}
+	conflictsList.Flags().StringVar(&conflictsEntity, "entity", "", "optional entity key filter")
+	conflictsResolve := &cobra.Command{
+		Use:   "resolve --id <conflict-id> --strategy <local|remote|merge>",
+		Short: "Resolve a conflict record",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if strings.TrimSpace(conflictID) == "" {
+				return fmt.Errorf("--id is required")
+			}
+			if strings.TrimSpace(conflictStrategy) == "" {
+				return fmt.Errorf("--strategy is required")
+			}
+			app, err := loadApp(*vaultPath)
+			if err != nil {
+				return err
+			}
+			out, err := app.CollabCLI.ConflictResolve(context.Background(), conflictID, conflictStrategy)
+			if err != nil {
+				return err
+			}
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "resolved: %s strategy=%s status=%s\n", out.ID, out.Strategy, out.Status)
+			return nil
+		},
+	}
+	conflictsResolve.Flags().StringVar(&conflictID, "id", "", "conflict id")
+	conflictsResolve.Flags().StringVar(&conflictStrategy, "strategy", "", "resolution strategy: local|remote|merge")
+	conflicts.AddCommand(conflictsList, conflictsResolve)
+	collab.AddCommand(conflicts)
 
-	collab.AddCommand(&cobra.Command{
-		Use:   "export-state",
-		Short: "Export local collab state payload",
+	sync := &cobra.Command{Use: "sync", Short: "Synchronization commands"}
+	syncNow := &cobra.Command{
+		Use:   "now",
+		Short: "Trigger anti-entropy synchronization",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			app, err := loadApp(*vaultPath)
 			if err != nil {
 				return err
 			}
-			payload, err := app.CollabCLI.ExportState(context.Background())
+			out, err := app.CollabCLI.SyncNow(context.Background())
 			if err != nil {
 				return err
 			}
-			_, _ = fmt.Fprintln(cmd.OutOrStdout(), payload)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "synced ops=%d\n", out.Applied)
+			return nil
+		},
+	}
+	sync.AddCommand(syncNow)
+	collab.AddCommand(sync)
+
+	var snapshotOut string
+	snapshot := &cobra.Command{Use: "snapshot", Short: "Snapshot operations"}
+	snapshotExport := &cobra.Command{
+		Use:   "export --out <file>",
+		Short: "Export local collab snapshot payload",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if strings.TrimSpace(snapshotOut) == "" {
+				return fmt.Errorf("--out is required")
+			}
+			app, err := loadApp(*vaultPath)
+			if err != nil {
+				return err
+			}
+			payload, err := app.CollabCLI.SnapshotExport(context.Background())
+			if err != nil {
+				return err
+			}
+			if err := os.WriteFile(snapshotOut, []byte(payload.Payload), 0o644); err != nil {
+				return err
+			}
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "snapshot exported: %s\n", snapshotOut)
+			return nil
+		},
+	}
+	snapshotExport.Flags().StringVar(&snapshotOut, "out", "", "output file path")
+	snapshot.AddCommand(snapshotExport)
+	collab.AddCommand(snapshot)
+
+	collab.AddCommand(&cobra.Command{
+		Use:   "metrics",
+		Short: "Show collab metrics snapshot",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			app, err := loadApp(*vaultPath)
+			if err != nil {
+				return err
+			}
+			out, err := app.CollabCLI.Metrics(context.Background())
+			if err != nil {
+				return err
+			}
+			encoded, _ := json.MarshalIndent(out, "", "  ")
+			_, _ = fmt.Fprintln(cmd.OutOrStdout(), string(encoded))
 			return nil
 		},
 	})

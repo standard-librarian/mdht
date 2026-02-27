@@ -46,7 +46,10 @@ type pluginPort interface {
 type collabPort interface {
 	Status(ctx context.Context) (collabdto.StatusOutput, error)
 	PeerList(ctx context.Context) ([]collabdto.PeerOutput, error)
-	ReconcileNow(ctx context.Context) (collabdto.ReconcileOutput, error)
+	ActivityTail(ctx context.Context, since time.Time, limit int) ([]collabdto.ActivityOutput, error)
+	ConflictsList(ctx context.Context, entityKey string) ([]collabdto.ConflictOutput, error)
+	ConflictResolve(ctx context.Context, conflictID, strategy string) (collabdto.ConflictOutput, error)
+	SyncNow(ctx context.Context) (collabdto.ReconcileOutput, error)
 }
 
 type sourcesLoadedMsg struct {
@@ -109,9 +112,24 @@ type collabPeersMsg struct {
 	err   error
 }
 
-type collabReconcileMsg struct {
+type collabSyncMsg struct {
 	applied int
 	err     error
+}
+
+type collabActivityMsg struct {
+	events []collabdto.ActivityOutput
+	err    error
+}
+
+type collabConflictsMsg struct {
+	items []collabdto.ConflictOutput
+	err   error
+}
+
+type collabResolveMsg struct {
+	item collabdto.ConflictOutput
+	err  error
 }
 
 type Model struct {
@@ -135,6 +153,9 @@ type Model struct {
 	pluginResult          plugindto.ExecuteOutput
 	collabStatus          collabdto.StatusOutput
 	collabPeers           []collabdto.PeerOutput
+	collabActivity        []collabdto.ActivityOutput
+	collabConflicts       []collabdto.ConflictOutput
+	collabPanel           string
 
 	showPalette  bool
 	paletteInput string
@@ -155,6 +176,7 @@ func NewModel(vaultPath string, library libraryPort, session sessionPort, reader
 		status:      "ready",
 		hasActive:   false,
 		showPalette: false,
+		collabPanel: "presence",
 	}
 }
 
@@ -293,13 +315,36 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.collabPeers = msg.peers
 		m.status = fmt.Sprintf("collab peers loaded: %d", len(msg.peers))
 		return m, nil
-	case collabReconcileMsg:
+	case collabSyncMsg:
 		if msg.err != nil {
-			m.status = "collab reconcile failed: " + msg.err.Error()
+			m.status = "collab sync failed: " + msg.err.Error()
 			return m, nil
 		}
-		m.status = fmt.Sprintf("collab reconciled ops=%d", msg.applied)
+		m.status = fmt.Sprintf("collab synced ops=%d", msg.applied)
 		return m, m.loadCollabStatusCmd()
+	case collabActivityMsg:
+		if msg.err != nil {
+			m.status = "collab activity failed: " + msg.err.Error()
+			return m, nil
+		}
+		m.collabActivity = msg.events
+		m.status = fmt.Sprintf("collab activity loaded: %d", len(msg.events))
+		return m, nil
+	case collabConflictsMsg:
+		if msg.err != nil {
+			m.status = "collab conflicts failed: " + msg.err.Error()
+			return m, nil
+		}
+		m.collabConflicts = msg.items
+		m.status = fmt.Sprintf("collab conflicts loaded: %d", len(msg.items))
+		return m, nil
+	case collabResolveMsg:
+		if msg.err != nil {
+			m.status = "collab resolve failed: " + msg.err.Error()
+			return m, nil
+		}
+		m.status = fmt.Sprintf("collab conflict resolved: %s", msg.item.ID)
+		return m, tea.Batch(m.loadCollabConflictsCmd(), m.loadCollabStatusCmd())
 	case tea.KeyMsg:
 		if m.showPalette {
 			return m.handlePaletteInput(msg)
@@ -310,7 +355,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) View() string {
-	headline := theme.Title.Render("mdht") + " " + theme.Muted.Render("Internal Alpha")
+	headline := theme.Title.Render("mdht") + " " + theme.Muted.Render("Public Beta")
 	sub := theme.Muted.Render(fmt.Sprintf("vault: %s", m.vaultPath))
 
 	if m.hasActive {
@@ -337,7 +382,7 @@ func (m Model) View() string {
 	if !m.collabStatus.LastSyncAt.IsZero() {
 		lastSync = time.Since(m.collabStatus.LastSyncAt).Round(time.Second).String()
 	}
-	footer := "\n" + theme.Hot.Render("status: "+m.status) + "\n" + theme.Muted.Render(fmt.Sprintf("collab:%s peers:%d pending_ops:%d last_sync:%s", collabStatus, m.collabStatus.PeerCount, m.collabStatus.PendingOps, lastSync)) + "\n" + theme.Muted.Render("keys: up/down select, enter open, s start session, : palette, q quit")
+	footer := "\n" + theme.Hot.Render("status: "+m.status) + "\n" + theme.Muted.Render(fmt.Sprintf("collab:%s peers:%d approved_peers:%d pending_conflicts:%d pending_ops:%d last_sync:%s", collabStatus, m.collabStatus.PeerCount, m.collabStatus.ApprovedPeerCount, m.collabStatus.PendingConflicts, m.collabStatus.PendingOps, lastSync)) + "\n" + theme.Muted.Render("keys: up/down select, enter open, s start session, : palette, q quit")
 	body := strings.Join([]string{headline, sub, row}, "\n") + palette + footer
 	return theme.App.Render(body)
 }
@@ -526,9 +571,22 @@ func (m Model) executePalette(input string) (tea.Model, tea.Cmd) {
 	case "collab:status":
 		return m, m.loadCollabStatusCmd()
 	case "collab:peers":
+		m.collabPanel = "presence"
 		return m, m.loadCollabPeersCmd()
-	case "collab:reconcile":
-		return m, m.reconcileCollabCmd()
+	case "collab:activity":
+		m.collabPanel = "activity"
+		return m, m.loadCollabActivityCmd()
+	case "collab:conflicts":
+		m.collabPanel = "conflicts"
+		return m, m.loadCollabConflictsCmd()
+	case "collab:resolve":
+		if len(parts) < 3 {
+			m.status = "usage: collab:resolve <conflict-id> <local|remote|merge>"
+			return m, nil
+		}
+		return m, m.resolveCollabConflictCmd(parts[1], parts[2])
+	case "collab:sync-now":
+		return m, m.syncCollabCmd()
 	default:
 		m.status = "unknown command"
 		return m, nil
@@ -649,13 +707,43 @@ func (m Model) loadCollabPeersCmd() tea.Cmd {
 	}
 }
 
-func (m Model) reconcileCollabCmd() tea.Cmd {
+func (m Model) syncCollabCmd() tea.Cmd {
 	return func() tea.Msg {
 		if m.collab == nil {
-			return collabReconcileMsg{}
+			return collabSyncMsg{}
 		}
-		out, err := m.collab.ReconcileNow(context.Background())
-		return collabReconcileMsg{applied: out.Applied, err: err}
+		out, err := m.collab.SyncNow(context.Background())
+		return collabSyncMsg{applied: out.Applied, err: err}
+	}
+}
+
+func (m Model) loadCollabActivityCmd() tea.Cmd {
+	return func() tea.Msg {
+		if m.collab == nil {
+			return collabActivityMsg{}
+		}
+		events, err := m.collab.ActivityTail(context.Background(), time.Time{}, 100)
+		return collabActivityMsg{events: events, err: err}
+	}
+}
+
+func (m Model) loadCollabConflictsCmd() tea.Cmd {
+	return func() tea.Msg {
+		if m.collab == nil {
+			return collabConflictsMsg{}
+		}
+		items, err := m.collab.ConflictsList(context.Background(), "")
+		return collabConflictsMsg{items: items, err: err}
+	}
+}
+
+func (m Model) resolveCollabConflictCmd(conflictID, strategy string) tea.Cmd {
+	return func() tea.Msg {
+		if m.collab == nil {
+			return collabResolveMsg{}
+		}
+		item, err := m.collab.ConflictResolve(context.Background(), conflictID, strategy)
+		return collabResolveMsg{item: item, err: err}
 	}
 }
 
@@ -745,10 +833,38 @@ func (m Model) renderContextPane(width, height int) string {
 			lines = append(lines, fmt.Sprintf("- %s (%s)", item.ID, item.Kind))
 		}
 	}
-	if len(m.collabPeers) > 0 {
-		lines = append(lines, "", theme.Title.Render("Collab Peers"))
+	panelLabel := m.collabPanel
+	if panelLabel != "" {
+		panelLabel = strings.ToUpper(panelLabel[:1]) + panelLabel[1:]
+	}
+	lines = append(lines, "", theme.Title.Render("Collab Panel: "+panelLabel))
+	switch m.collabPanel {
+	case "activity":
+		if len(m.collabActivity) == 0 {
+			lines = append(lines, theme.Muted.Render("No activity loaded"))
+		}
+		for i, item := range m.collabActivity {
+			if i >= 8 {
+				break
+			}
+			lines = append(lines, fmt.Sprintf("- %s %s", item.Type, item.Message))
+		}
+	case "conflicts":
+		if len(m.collabConflicts) == 0 {
+			lines = append(lines, theme.Muted.Render("No conflicts loaded"))
+		}
+		for i, item := range m.collabConflicts {
+			if i >= 8 {
+				break
+			}
+			lines = append(lines, fmt.Sprintf("- %s [%s] %s/%s", item.ID, item.Status, item.EntityKey, item.Field))
+		}
+	default:
+		if len(m.collabPeers) == 0 {
+			lines = append(lines, theme.Muted.Render("No peers loaded"))
+		}
 		for _, item := range m.collabPeers {
-			lines = append(lines, fmt.Sprintf("- %s", item.PeerID))
+			lines = append(lines, fmt.Sprintf("- %s (%s)", item.PeerID, item.State))
 		}
 	}
 	return theme.Pane.Width(width).Height(height).Render(strings.Join(lines, "\n"))

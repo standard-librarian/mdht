@@ -8,7 +8,9 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"sync"
 	"time"
 
@@ -38,10 +40,10 @@ const (
 type Libp2pTransport struct{}
 
 type libp2pRuntime struct {
-	host         host.Host
-	workspaceID  string
-	workspaceKey []byte
-	handlers     collabout.TransportHandlers
+	host        host.Host
+	workspaceID string
+	keyRing     domain.KeyRing
+	handlers    collabout.TransportHandlers
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -56,15 +58,18 @@ type libp2pRuntime struct {
 
 type authRequest struct {
 	WorkspaceID string `json:"workspace_id"`
+	KeyID       string `json:"key_id"`
 	Nonce       string `json:"nonce"`
 	Tag         string `json:"tag"`
 }
 
 type authResponse struct {
 	WorkspaceID string `json:"workspace_id"`
+	KeyID       string `json:"key_id"`
 	Nonce       string `json:"nonce"`
 	Tag         string `json:"tag"`
 	NodeID      string `json:"node_id"`
+	ErrorCode   string `json:"error_code,omitempty"`
 }
 
 func NewLibp2pTransport() collabout.Transport {
@@ -93,7 +98,7 @@ func (t *Libp2pTransport) Start(ctx context.Context, input collabout.TransportSt
 	r := &libp2pRuntime{
 		host:          h,
 		workspaceID:   input.WorkspaceID,
-		workspaceKey:  input.WorkspaceKey,
+		keyRing:       input.KeyRing,
 		handlers:      handlers,
 		ctx:           runCtx,
 		cancel:        cancel,
@@ -112,7 +117,13 @@ func (t *Libp2pTransport) Start(ctx context.Context, input collabout.TransportSt
 	h.SetStreamHandler(syncProtocol, r.handleSync)
 
 	for _, configuredPeer := range input.Peers {
-		r.startPeerWatcher(configuredPeer)
+		if configuredPeer.IsApproved() {
+			r.startPeerWatcher(configuredPeer)
+		} else {
+			r.mu.Lock()
+			r.peers[configuredPeer.PeerID] = configuredPeer
+			r.mu.Unlock()
+		}
 	}
 	r.emitStatus()
 
@@ -163,14 +174,39 @@ func (r *libp2pRuntime) AddPeer(ctx context.Context, peerInfo domain.Peer) error
 	if err != nil {
 		return fmt.Errorf("%w: %v", domain.ErrInvalidPeerAddress, err)
 	}
+	peerInfo.PeerID = info.ID.String()
+	r.mu.Lock()
+	r.peers[peerInfo.PeerID] = peerInfo
+	r.mu.Unlock()
+	if peerInfo.IsApproved() {
+		attemptCtx, cancel := context.WithTimeout(ctx, 4*time.Second)
+		defer cancel()
+		if err := r.connectAndAuthenticate(attemptCtx, peerInfo); err != nil {
+			return err
+		}
+		r.startPeerWatcher(peerInfo)
+	}
+	return nil
+}
+
+func (r *libp2pRuntime) ApprovePeer(ctx context.Context, peerInfo domain.Peer) error {
+	r.mu.Lock()
+	r.peers[peerInfo.PeerID] = peerInfo
+	r.mu.Unlock()
+	r.startPeerWatcher(peerInfo)
 	attemptCtx, cancel := context.WithTimeout(ctx, 4*time.Second)
 	defer cancel()
-	if err := r.connectAndAuthenticate(attemptCtx, peerInfo); err != nil {
-		return err
+	return r.connectAndAuthenticate(attemptCtx, peerInfo)
+}
+
+func (r *libp2pRuntime) RevokePeer(_ context.Context, peerID string) error {
+	r.mu.Lock()
+	if peerInfo, ok := r.peers[peerID]; ok {
+		peerInfo.State = domain.PeerStateRevoked
+		r.peers[peerID] = peerInfo
 	}
-	peerInfo.PeerID = info.ID.String()
-	r.startPeerWatcher(peerInfo)
-	return nil
+	r.mu.Unlock()
+	return r.RemovePeer(context.Background(), peerID)
 }
 
 func (r *libp2pRuntime) RemovePeer(_ context.Context, peerID string) error {
@@ -192,6 +228,13 @@ func (r *libp2pRuntime) RemovePeer(_ context.Context, peerID string) error {
 		_ = r.host.Network().ClosePeer(pid)
 	}
 	r.emitStatus()
+	return nil
+}
+
+func (r *libp2pRuntime) UpdateKeyRing(_ context.Context, ring domain.KeyRing) error {
+	r.mu.Lock()
+	r.keyRing = ring
+	r.mu.Unlock()
 	return nil
 }
 
@@ -320,20 +363,31 @@ func (r *libp2pRuntime) authenticatePeer(ctx context.Context, peerID peer.ID) er
 		return err
 	}
 	nonce := hex.EncodeToString(nonceRaw)
-	req := authRequest{WorkspaceID: r.workspaceID, Nonce: nonce, Tag: signAuth(r.workspaceKey, r.workspaceID, nonce)}
+	keyID, key, err := r.activeKey()
+	if err != nil {
+		return err
+	}
+	req := authRequest{WorkspaceID: r.workspaceID, KeyID: keyID, Nonce: nonce, Tag: signAuth(key, r.workspaceID, nonce)}
 	if err := encoder.Encode(req); err != nil {
 		return err
 	}
 	resp := authResponse{}
 	if err := decoder.Decode(&resp); err != nil {
 		r.incrementCounter(func(c *collabout.ValidationCounters) { c.DecodeErrors++ })
+		if errors.Is(err, io.EOF) {
+			return domain.ErrInvalidAuthTag
+		}
 		return err
+	}
+	if resp.ErrorCode != "" {
+		return errorFromCode(resp.ErrorCode)
 	}
 	if resp.WorkspaceID != r.workspaceID || resp.Nonce != nonce {
 		r.incrementCounter(func(c *collabout.ValidationCounters) { c.WorkspaceMismatch++ })
 		return domain.ErrWorkspaceMismatch
 	}
-	if !verifyAuth(r.workspaceKey, r.workspaceID, resp.Nonce, resp.Tag) {
+	key, err = r.resolveKey(resp.KeyID)
+	if err != nil || !verifyAuth(key, r.workspaceID, resp.Nonce, resp.Tag) {
 		r.incrementCounter(func(c *collabout.ValidationCounters) { c.InvalidAuthTag++ })
 		return domain.ErrInvalidAuthTag
 	}
@@ -350,17 +404,32 @@ func (r *libp2pRuntime) handleAuth(stream network.Stream) {
 	defer stream.Close()
 	decoder := json.NewDecoder(stream)
 	encoder := json.NewEncoder(stream)
+	writeErr := func(code domain.ErrorCode) {
+		_ = encoder.Encode(authResponse{
+			WorkspaceID: r.workspaceID,
+			ErrorCode:   string(code),
+		})
+	}
 	req := authRequest{}
 	if err := decoder.Decode(&req); err != nil {
 		r.incrementCounter(func(c *collabout.ValidationCounters) { c.DecodeErrors++ })
+		writeErr(domain.ErrorAuthInvalid)
 		return
 	}
 	if req.WorkspaceID != r.workspaceID {
 		r.incrementCounter(func(c *collabout.ValidationCounters) { c.WorkspaceMismatch++ })
+		writeErr(domain.ErrorWorkspaceMismatch)
 		return
 	}
-	if !verifyAuth(r.workspaceKey, req.WorkspaceID, req.Nonce, req.Tag) {
+	if !r.isApprovedPeer(stream.Conn().RemotePeer().String()) {
+		r.incrementCounter(func(c *collabout.ValidationCounters) { c.UnauthenticatedPeer++ })
+		writeErr(domain.ErrorPeerNotApproved)
+		return
+	}
+	key, err := r.resolveKey(req.KeyID)
+	if err != nil || !verifyAuth(key, req.WorkspaceID, req.Nonce, req.Tag) {
 		r.incrementCounter(func(c *collabout.ValidationCounters) { c.InvalidAuthTag++ })
+		writeErr(domain.ErrorAuthInvalid)
 		return
 	}
 	peerID := stream.Conn().RemotePeer()
@@ -370,15 +439,49 @@ func (r *libp2pRuntime) handleAuth(stream network.Stream) {
 	r.mu.Unlock()
 	r.emitStatus()
 
+	keyID, activeKey, err := r.activeKey()
+	if err != nil {
+		r.incrementCounter(func(c *collabout.ValidationCounters) { c.DecodeErrors++ })
+		return
+	}
 	if err := encoder.Encode(authResponse{
 		WorkspaceID: r.workspaceID,
+		KeyID:       keyID,
 		Nonce:       req.Nonce,
-		Tag:         signAuth(r.workspaceKey, r.workspaceID, req.Nonce),
+		Tag:         signAuth(activeKey, r.workspaceID, req.Nonce),
 		NodeID:      r.host.ID().String(),
 	}); err != nil {
 		r.incrementCounter(func(c *collabout.ValidationCounters) { c.DecodeErrors++ })
 		return
 	}
+}
+
+func (r *libp2pRuntime) isApprovedPeer(peerID string) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	item, ok := r.peers[peerID]
+	if !ok {
+		return false
+	}
+	return item.IsApproved()
+}
+
+func (r *libp2pRuntime) resolveKey(keyID string) ([]byte, error) {
+	r.mu.RLock()
+	ring := r.keyRing
+	r.mu.RUnlock()
+	return ring.ResolveKey(keyID, time.Now().UTC())
+}
+
+func (r *libp2pRuntime) activeKey() (string, []byte, error) {
+	r.mu.RLock()
+	ring := r.keyRing
+	r.mu.RUnlock()
+	key, err := ring.ResolveKey(ring.ActiveKeyID, time.Now().UTC())
+	if err != nil {
+		return "", nil, err
+	}
+	return ring.ActiveKeyID, key, nil
 }
 
 func (r *libp2pRuntime) handleOp(stream network.Stream) {
@@ -492,4 +595,17 @@ func verifyAuth(key []byte, workspaceID, nonce, tag string) bool {
 		return false
 	}
 	return hmac.Equal(given, want)
+}
+
+func errorFromCode(code string) error {
+	switch domain.ErrorCode(code) {
+	case domain.ErrorPeerNotApproved:
+		return domain.ErrPeerNotApproved
+	case domain.ErrorAuthInvalid:
+		return domain.ErrInvalidAuthTag
+	case domain.ErrorWorkspaceMismatch:
+		return domain.ErrWorkspaceMismatch
+	default:
+		return domain.ErrInvalidAuthTag
+	}
 }

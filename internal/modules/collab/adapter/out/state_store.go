@@ -106,6 +106,9 @@ func (s *FileSnapshotStore) Load(_ context.Context) (domain.CRDTState, error) {
 	if state.AppliedOps == nil {
 		state.AppliedOps = map[string]struct{}{}
 	}
+	if state.SchemaVersion == 0 {
+		state.SchemaVersion = domain.SchemaVersionV2
+	}
 	return state, nil
 }
 
