@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	graphdto "mdht/internal/modules/graph/dto"
 	graphin "mdht/internal/modules/graph/port/in"
 	libraryout "mdht/internal/modules/library/adapter/out"
 	"mdht/internal/modules/library/dto"
@@ -24,6 +25,22 @@ type fakeGraph struct{ called int }
 func (f *fakeGraph) SyncSource(context.Context, graphin.SyncSourceInput) error {
 	f.called++
 	return nil
+}
+
+func (f *fakeGraph) ListTopics(context.Context, int) ([]graphdto.TopicSummaryOutput, error) {
+	return nil, nil
+}
+
+func (f *fakeGraph) Neighbors(context.Context, graphin.NeighborsInput) (graphdto.NeighborsOutput, error) {
+	return graphdto.NeighborsOutput{}, nil
+}
+
+func (f *fakeGraph) Search(context.Context, string) ([]graphdto.NodeOutput, error) {
+	return nil, nil
+}
+
+func (f *fakeGraph) Path(context.Context, graphin.PathInput) (graphdto.PathOutput, error) {
+	return graphdto.PathOutput{}, nil
 }
 
 func TestIngestListGetUpdateAndReindex(t *testing.T) {

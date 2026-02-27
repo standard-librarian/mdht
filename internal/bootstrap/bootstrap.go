@@ -54,7 +54,7 @@ func New(cfg config.Config) (*App, error) {
 	if err != nil {
 		return nil, fmt.Errorf("new graph projector: %w", err)
 	}
-	graphSvc := graphservice.NewGraphService(graphTopicStore, graphLinkProjector)
+	graphSvc := graphservice.NewGraphService(graphTopicStore, graphLinkProjector, graphLinkProjector)
 	graphUC := graphusecase.NewInteractor(graphSvc)
 
 	libraryStore := libraryoutadapter.NewVaultSourceStore(cfg.VaultPath)

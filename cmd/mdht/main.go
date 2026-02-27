@@ -37,6 +37,7 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(newTUICmd(&vaultPath))
 	root.AddCommand(newIngestCmd(&vaultPath))
 	root.AddCommand(newSourceCmd(&vaultPath))
+	root.AddCommand(newGraphCmd(&vaultPath))
 	root.AddCommand(newSessionCmd(&vaultPath))
 	root.AddCommand(newReaderCmd(&vaultPath))
 	root.AddCommand(newReindexCmd(&vaultPath))
@@ -170,6 +171,153 @@ func newSourceCmd(vaultPath *string) *cobra.Command {
 	show.Flags().StringVar(&sourceID, "id", "", "source id")
 	source.AddCommand(show)
 	return source
+}
+
+func newGraphCmd(vaultPath *string) *cobra.Command {
+	graph := &cobra.Command{Use: "graph", Short: "Knowledge graph explore commands"}
+
+	var topicsLimit int
+	var topicsJSON bool
+	topics := &cobra.Command{
+		Use:   "topics",
+		Short: "List projected topics",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			app, err := loadApp(*vaultPath)
+			if err != nil {
+				return err
+			}
+			out, err := app.GraphCLI.ListTopics(context.Background(), topicsLimit)
+			if err != nil {
+				return err
+			}
+			if topicsJSON {
+				encoded, _ := json.Marshal(out)
+				_, _ = fmt.Fprintln(cmd.OutOrStdout(), string(encoded))
+				return nil
+			}
+			if len(out) == 0 {
+				_, _ = fmt.Fprintln(cmd.OutOrStdout(), "no topics")
+				return nil
+			}
+			for _, item := range out {
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s\t%d\n", item.TopicSlug, item.SourceCount)
+			}
+			return nil
+		},
+	}
+	topics.Flags().IntVar(&topicsLimit, "limit", 50, "max topics to return")
+	topics.Flags().BoolVar(&topicsJSON, "json", false, "output topics as JSON")
+	graph.AddCommand(topics)
+
+	var neighborsNode string
+	var neighborsDepth int
+	var neighborsJSON bool
+	neighbors := &cobra.Command{
+		Use:   "neighbors --node <source-id|topic-slug>",
+		Short: "List graph neighbors for a source/topic node",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if strings.TrimSpace(neighborsNode) == "" {
+				return fmt.Errorf("--node is required")
+			}
+			app, err := loadApp(*vaultPath)
+			if err != nil {
+				return err
+			}
+			out, err := app.GraphCLI.Neighbors(context.Background(), neighborsNode, neighborsDepth)
+			if err != nil {
+				return err
+			}
+			if neighborsJSON {
+				encoded, _ := json.Marshal(out)
+				_, _ = fmt.Fprintln(cmd.OutOrStdout(), string(encoded))
+				return nil
+			}
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "focus=%s depth=%d neighbors=%d\n", out.FocusID, out.Depth, len(out.Nodes))
+			for _, item := range out.Nodes {
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%s\n", item.Kind, item.ID, item.Label)
+			}
+			return nil
+		},
+	}
+	neighbors.Flags().StringVar(&neighborsNode, "node", "", "source id or topic slug")
+	neighbors.Flags().IntVar(&neighborsDepth, "depth", 1, "neighbor traversal depth (1..2)")
+	neighbors.Flags().BoolVar(&neighborsJSON, "json", false, "output neighbors as JSON")
+	graph.AddCommand(neighbors)
+
+	var searchQuery string
+	var searchJSON bool
+	search := &cobra.Command{
+		Use:   "search --query <text>",
+		Short: "Search source/topic graph nodes",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if strings.TrimSpace(searchQuery) == "" {
+				return fmt.Errorf("--query is required")
+			}
+			app, err := loadApp(*vaultPath)
+			if err != nil {
+				return err
+			}
+			out, err := app.GraphCLI.Search(context.Background(), searchQuery)
+			if err != nil {
+				return err
+			}
+			if searchJSON {
+				encoded, _ := json.Marshal(out)
+				_, _ = fmt.Fprintln(cmd.OutOrStdout(), string(encoded))
+				return nil
+			}
+			if len(out) == 0 {
+				_, _ = fmt.Fprintln(cmd.OutOrStdout(), "no results")
+				return nil
+			}
+			for _, item := range out {
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%s\n", item.Kind, item.ID, item.Label)
+			}
+			return nil
+		},
+	}
+	search.Flags().StringVar(&searchQuery, "query", "", "search text")
+	search.Flags().BoolVar(&searchJSON, "json", false, "output search results as JSON")
+	graph.AddCommand(search)
+
+	var pathFrom, pathTo string
+	var pathJSON bool
+	path := &cobra.Command{
+		Use:   "path --from <id> --to <id>",
+		Short: "Find shortest path between two graph nodes",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if strings.TrimSpace(pathFrom) == "" || strings.TrimSpace(pathTo) == "" {
+				return fmt.Errorf("--from and --to are required")
+			}
+			app, err := loadApp(*vaultPath)
+			if err != nil {
+				return err
+			}
+			out, err := app.GraphCLI.Path(context.Background(), pathFrom, pathTo)
+			if err != nil {
+				return err
+			}
+			if pathJSON {
+				encoded, _ := json.Marshal(out)
+				_, _ = fmt.Fprintln(cmd.OutOrStdout(), string(encoded))
+				return nil
+			}
+			if !out.Found {
+				_, _ = fmt.Fprintln(cmd.OutOrStdout(), "no path")
+				return nil
+			}
+			for _, item := range out.Nodes {
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%s\n", item.Kind, item.ID, item.Label)
+			}
+			return nil
+		},
+	}
+	path.Flags().StringVar(&pathFrom, "from", "", "from node id")
+	path.Flags().StringVar(&pathTo, "to", "", "to node id")
+	path.Flags().BoolVar(&pathJSON, "json", false, "output path as JSON")
+	graph.AddCommand(path)
+
+	return graph
 }
 
 func newSessionCmd(vaultPath *string) *cobra.Command {
@@ -872,6 +1020,63 @@ func newCollabCmd(vaultPath *string) *cobra.Command {
 	}
 	peerLatency.Flags().BoolVar(&peerLatencyJSON, "json", false, "output peer latency as JSON")
 	peer.AddCommand(peerLatency)
+	var peerTimelineSince time.Duration
+	var peerTimelineLimit int
+	var peerTimelineJSON bool
+	peerTimeline := &cobra.Command{
+		Use:   "timeline --peer-id <id>",
+		Short: "Show presence timeline events for a peer",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if strings.TrimSpace(peerID) == "" {
+				return fmt.Errorf("--peer-id is required")
+			}
+			app, err := loadApp(*vaultPath)
+			if err != nil {
+				return err
+			}
+			since := time.Time{}
+			if peerTimelineSince > 0 {
+				since = time.Now().UTC().Add(-peerTimelineSince)
+			}
+			events, err := app.CollabCLI.ActivityTail(context.Background(), since, peerTimelineLimit)
+			if err != nil {
+				return err
+			}
+			filtered := make([]map[string]any, 0, len(events))
+			for _, event := range events {
+				if !isPresenceActivityType(event.Type) {
+					continue
+				}
+				if event.Fields["peer_id"] != peerID {
+					continue
+				}
+				filtered = append(filtered, map[string]any{
+					"occurred_at": event.OccurredAt,
+					"type":        event.Type,
+					"message":     event.Message,
+					"fields":      event.Fields,
+				})
+			}
+			if peerTimelineJSON {
+				encoded, _ := json.Marshal(filtered)
+				_, _ = fmt.Fprintln(cmd.OutOrStdout(), string(encoded))
+				return nil
+			}
+			if len(filtered) == 0 {
+				_, _ = fmt.Fprintln(cmd.OutOrStdout(), "no timeline events")
+				return nil
+			}
+			for _, item := range filtered {
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s %s %s\n", item["occurred_at"].(time.Time).Format(time.RFC3339), item["type"], item["message"])
+			}
+			return nil
+		},
+	}
+	peerTimeline.Flags().StringVar(&peerID, "peer-id", "", "peer id")
+	peerTimeline.Flags().DurationVar(&peerTimelineSince, "since", 0, "filter events newer than duration (e.g. 2h)")
+	peerTimeline.Flags().IntVar(&peerTimelineLimit, "limit", 200, "max number of events")
+	peerTimeline.Flags().BoolVar(&peerTimelineJSON, "json", false, "output timeline as JSON")
+	peer.AddCommand(peerTimeline)
 	collab.AddCommand(peer)
 
 	var statusJSON bool
@@ -1017,6 +1222,84 @@ func newCollabCmd(vaultPath *string) *cobra.Command {
 	activityTail.Flags().IntVar(&activityLimit, "limit", 100, "max number of events")
 	activity.AddCommand(activityTail)
 	collab.AddCommand(activity)
+
+	var presenceJSON bool
+	presence := &cobra.Command{
+		Use:   "presence",
+		Short: "Show collaboration presence and peer health",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			app, err := loadApp(*vaultPath)
+			if err != nil {
+				return err
+			}
+			status, err := app.CollabCLI.Status(context.Background())
+			if err != nil {
+				return err
+			}
+			peers, err := app.CollabCLI.PeerList(context.Background())
+			if err != nil {
+				return err
+			}
+			if presenceJSON {
+				payload := map[string]any{
+					"status": status,
+					"peers":  peers,
+				}
+				encoded, _ := json.Marshal(payload)
+				_, _ = fmt.Fprintln(cmd.OutOrStdout(), string(encoded))
+				return nil
+			}
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "connectivity=%s nat_mode=%s reachability=%s peers=%d approved=%d pending_conflicts=%d pending_ops=%d\n",
+				status.Connectivity, status.NATMode, status.Reachability, status.PeerCount, status.ApprovedPeerCount, status.PendingConflicts, status.PendingOps)
+			for _, item := range peers {
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\treachability=%s\trtt_ms=%d\tdial=%s\ttraversal=%s\n",
+					item.PeerID, item.State, item.Reachability, item.RTTMS, item.LastDialResult, item.TraversalMode)
+			}
+			return nil
+		},
+	}
+	presence.Flags().BoolVar(&presenceJSON, "json", false, "output presence state as JSON")
+	var presenceSince time.Duration
+	var presenceLimit int
+	presenceTail := &cobra.Command{
+		Use:   "tail",
+		Short: "Tail presence-related activity events",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			app, err := loadApp(*vaultPath)
+			if err != nil {
+				return err
+			}
+			since := time.Time{}
+			if presenceSince > 0 {
+				since = time.Now().UTC().Add(-presenceSince)
+			}
+			events, err := app.CollabCLI.ActivityTail(context.Background(), since, presenceLimit)
+			if err != nil {
+				return err
+			}
+			count := 0
+			for _, event := range events {
+				if !isPresenceActivityType(event.Type) {
+					continue
+				}
+				count++
+				peer := event.Fields["peer_id"]
+				if strings.TrimSpace(peer) == "" {
+					_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s %s %s\n", event.OccurredAt.Format(time.RFC3339), event.Type, event.Message)
+					continue
+				}
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s %s peer=%s %s\n", event.OccurredAt.Format(time.RFC3339), event.Type, peer, event.Message)
+			}
+			if count == 0 {
+				_, _ = fmt.Fprintln(cmd.OutOrStdout(), "no presence events")
+			}
+			return nil
+		},
+	}
+	presenceTail.Flags().DurationVar(&presenceSince, "since", 0, "filter events newer than duration (e.g. 30m)")
+	presenceTail.Flags().IntVar(&presenceLimit, "limit", 100, "max number of events")
+	presence.AddCommand(presenceTail)
+	collab.AddCommand(presence)
 
 	var conflictsEntity string
 	var conflictID, conflictStrategy string

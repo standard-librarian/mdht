@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	graphdto "mdht/internal/modules/graph/dto"
 	graphin "mdht/internal/modules/graph/port/in"
 	libraryout "mdht/internal/modules/library/adapter/out"
 	"mdht/internal/modules/library/dto"
@@ -19,6 +20,22 @@ type fakeURLGraph struct{ called int }
 func (f *fakeURLGraph) SyncSource(context.Context, graphin.SyncSourceInput) error {
 	f.called++
 	return nil
+}
+
+func (f *fakeURLGraph) ListTopics(context.Context, int) ([]graphdto.TopicSummaryOutput, error) {
+	return nil, nil
+}
+
+func (f *fakeURLGraph) Neighbors(context.Context, graphin.NeighborsInput) (graphdto.NeighborsOutput, error) {
+	return graphdto.NeighborsOutput{}, nil
+}
+
+func (f *fakeURLGraph) Search(context.Context, string) ([]graphdto.NodeOutput, error) {
+	return nil, nil
+}
+
+func (f *fakeURLGraph) Path(context.Context, graphin.PathInput) (graphdto.PathOutput, error) {
+	return graphdto.PathOutput{}, nil
 }
 
 func TestIngestURLCreatesSourceAndCanBeRead(t *testing.T) {
