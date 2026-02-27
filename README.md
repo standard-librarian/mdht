@@ -16,21 +16,30 @@
 - Collaboration scope: mdht-managed fields/blocks only (`source/*`, `session/*`, `topic/*`).
 - Vault markdown is source of truth; SQLite is a projection/index.
 
-## Install (GitHub Release)
+## Install
 
-Release assets are published per tag (`v*`) in [GitHub Releases](https://github.com/standard-librarian/mdht/releases).
+### Build from source (Go 1.25+)
 
-Available targets:
+```bash
+git clone https://github.com/standard-librarian/mdht.git
+cd mdht
+go build -o mdht ./cmd/mdht
+./mdht --help
+```
 
-- `linux/amd64`
-- `linux/arm64`
-- `darwin/amd64`
-- `darwin/arm64`
+Move the binary somewhere on your `$PATH`:
 
-Each release contains:
+```bash
+mv mdht /usr/local/bin/
+```
 
-- `mdht_<version>_<os>_<arch>.tar.gz`
-- `checksums.txt`
+### GitHub Release (when available)
+
+Pre-built release archives are published per tag (`v*`) at
+[GitHub Releases](https://github.com/standard-librarian/mdht/releases)
+for `linux/amd64`, `linux/arm64`, `darwin/amd64`, and `darwin/arm64`.
+
+Each release contains `mdht_<version>_<os>_<arch>.tar.gz` and `checksums.txt`.
 
 Example (macOS arm64):
 

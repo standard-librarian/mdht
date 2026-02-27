@@ -8,15 +8,23 @@ This guide gets a new beta tester from install to a full local study loop.
 - an Obsidian vault path
 - `mdht` binary from a GitHub release
 
-## Install from release
+## Install
 
-Pick the release and target asset from:
+### Build from source (Go 1.25+)
 
-- <https://github.com/standard-librarian/mdht/releases>
+```bash
+git clone https://github.com/standard-librarian/mdht.git
+cd mdht
+go build -o mdht ./cmd/mdht
+mv mdht /usr/local/bin/
+mdht --help
+```
 
-The asset pattern is:
+### GitHub Release (when available)
 
-- `mdht_<version>_<os>_<arch>.tar.gz`
+Pre-built archives are at <https://github.com/standard-librarian/mdht/releases>.
+
+Asset pattern: `mdht_<version>_<os>_<arch>.tar.gz`
 
 Example:
 

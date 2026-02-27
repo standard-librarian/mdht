@@ -1449,3 +1449,13 @@ func newCollabCmd(vaultPath *string) *cobra.Command {
 
 	return collab
 }
+
+func isPresenceActivityType(t string) bool {
+	switch t {
+	case "peer_connected", "peer_rejected",
+		"dial_start", "dial_success", "dial_fail",
+		"hole_punch_attempt", "hole_punch_result":
+		return true
+	}
+	return false
+}
