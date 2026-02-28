@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/help"
+	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
@@ -18,8 +20,18 @@ import (
 	readerdto "mdht/internal/modules/reader/dto"
 	sessiondto "mdht/internal/modules/session/dto"
 	apperrors "mdht/internal/platform/errors"
+	"mdht/internal/ui/components"
 	"mdht/internal/ui/theme"
+	collabview "mdht/internal/ui/views/collab"
+	graphview "mdht/internal/ui/views/graph"
+	libraryview "mdht/internal/ui/views/library"
+	pluginsview "mdht/internal/ui/views/plugins"
+	readerview "mdht/internal/ui/views/reader"
 )
+
+// ─── ports ───────────────────────────────────────────────────────────────────
+// Each port is the minimal interface that this orchestration layer requires.
+// Sub-view ports are defined in their own packages and narrowed further.
 
 type libraryPort interface {
 	ListSources(ctx context.Context) ([]dto.SourceOutput, error)
@@ -39,7 +51,6 @@ type readerPort interface {
 type pluginPort interface {
 	ListCommands(ctx context.Context, pluginName string) ([]plugindto.CommandInfo, error)
 	Execute(ctx context.Context, input plugindto.ExecuteInput) (plugindto.ExecuteOutput, error)
-	Analyze(ctx context.Context, input plugindto.ExecuteInput) (plugindto.ExecuteOutput, error)
 	PrepareTTY(ctx context.Context, input plugindto.TTYPrepareInput) (plugindto.TTYPrepareOutput, error)
 }
 
@@ -57,23 +68,27 @@ type collabPort interface {
 	SyncHealth(ctx context.Context) (collabdto.SyncHealthOutput, error)
 }
 
-type sourcesLoadedMsg struct {
-	sources []dto.SourceOutput
-	err     error
+// ─── tab index ───────────────────────────────────────────────────────────────
+
+type tabID int
+
+const (
+	tabLibrary tabID = iota
+	tabReader
+	tabGraph
+	tabCollab
+	tabPlugins
+	tabCount
+)
+
+var tabLabels = [tabCount]string{
+	"Library", "Reader", "Graph", "Collab", "Plugins",
 }
+
+// ─── async messages ───────────────────────────────────────────────────────────
 
 type activeLoadedMsg struct {
 	active sessiondto.ActiveSessionOutput
-	err    error
-}
-
-type detailLoadedMsg struct {
-	detail dto.SourceDetailOutput
-	err    error
-}
-
-type readerOpenedMsg struct {
-	result readerdto.OpenResult
 	err    error
 }
 
@@ -87,205 +102,203 @@ type sessionEndedMsg struct {
 	err error
 }
 
-type pluginCommandsMsg struct {
-	pluginName string
-	commands   []plugindto.CommandInfo
-	err        error
-}
-
-type pluginExecMsg struct {
-	out plugindto.ExecuteOutput
-	err error
-}
-
 type pluginTTYReadyMsg struct {
 	plan plugindto.TTYPrepareOutput
 	err  error
 }
 
-type pluginTTYDoneMsg struct {
-	err error
+type pluginTTYDoneMsg struct{ err error }
+
+// ─── key bindings ─────────────────────────────────────────────────────────────
+
+type keyMap struct {
+	Tab     key.Binding
+	Help    key.Binding
+	Palette key.Binding
+	Quit    key.Binding
+	Enter   key.Binding
+	Session key.Binding
+	PrevPg  key.Binding
+	NextPg  key.Binding
 }
 
-type collabStatusMsg struct {
-	status collabdto.StatusOutput
-	err    error
+func defaultKeys() keyMap {
+	return keyMap{
+		Tab:     key.NewBinding(key.WithKeys("tab"), key.WithHelp("tab", "next tab")),
+		Help:    key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "help")),
+		Palette: key.NewBinding(key.WithKeys(":"), key.WithHelp(":", "palette")),
+		Quit:    key.NewBinding(key.WithKeys("ctrl+c", "q"), key.WithHelp("q", "quit")),
+		Enter:   key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "open")),
+		Session: key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "start session")),
+		PrevPg:  key.NewBinding(key.WithKeys("left"), key.WithHelp("←/→", "pdf page")),
+		NextPg:  key.NewBinding(key.WithKeys("right"), key.WithHelp("←/→", "pdf page")),
+	}
 }
 
-type collabPeersMsg struct {
-	peers []collabdto.PeerOutput
-	err   error
+func (k keyMap) ShortHelp() []key.Binding {
+	return []key.Binding{k.Tab, k.Help, k.Palette, k.Quit}
 }
 
-type collabSyncMsg struct {
-	applied int
-	err     error
+func (k keyMap) FullHelp() [][]key.Binding {
+	return [][]key.Binding{
+		{k.Tab, k.Enter, k.Session},
+		{k.PrevPg, k.NextPg},
+		{k.Help, k.Palette, k.Quit},
+	}
 }
 
-type collabActivityMsg struct {
-	events []collabdto.ActivityOutput
-	err    error
-}
+// ─── model ───────────────────────────────────────────────────────────────────
 
-type collabConflictsMsg struct {
-	items []collabdto.ConflictOutput
-	err   error
-}
-
-type collabResolveMsg struct {
-	item collabdto.ConflictOutput
-	err  error
-}
-
-type collabSyncHealthMsg struct {
-	health collabdto.SyncHealthOutput
-	err    error
-}
-
+// Model is the root Bubble Tea model. It owns tab routing, session state,
+// the global help overlay, and the command palette. All business logic is
+// delegated to port interfaces; all rendering is delegated to sub-views.
 type Model struct {
 	vaultPath string
-	library   libraryPort
-	session   sessionPort
-	reader    readerPort
-	plugin    pluginPort
-	collab    collabPort
 
-	sources       []dto.SourceOutput
-	selectedIndex int
-	detail        dto.SourceDetailOutput
-	readerResult  readerdto.OpenResult
+	// ports used at this orchestration level only
+	session sessionPort
+	plugin  pluginPort
+	collab  collabPort
 
+	// sub-views (one per tab)
+	libView    libraryview.Model
+	readView   readerview.Model
+	graphView  graphview.Model
+	collabView collabview.Model
+	pluginView pluginsview.Model
+
+	// global UI state
+	activeTab     tabID
+	keys          keyMap
+	help          help.Model
+	showHelp      bool
+	palette       components.Palette
 	activeSession sessiondto.ActiveSessionOutput
 	hasActive     bool
-
-	pluginNameForCommands string
-	pluginCommands        []plugindto.CommandInfo
-	pluginResult          plugindto.ExecuteOutput
-	collabStatus          collabdto.StatusOutput
-	collabPeers           []collabdto.PeerOutput
-	collabActivity        []collabdto.ActivityOutput
-	collabConflicts       []collabdto.ConflictOutput
-	collabPanel           string
-
-	showPalette  bool
-	paletteInput string
-	status       string
-
-	width  int
-	height int
+	status        string
+	width         int
+	height        int
 }
 
-func NewModel(vaultPath string, library libraryPort, session sessionPort, reader readerPort, plugin pluginPort, collab collabPort) Model {
+// ─── constructor ─────────────────────────────────────────────────────────────
+
+func NewModel(
+	vaultPath string,
+	library libraryPort,
+	session sessionPort,
+	reader readerPort,
+	plugin pluginPort,
+	collab collabPort,
+	graph graphview.GraphPort,
+) Model {
+	var collabV collabview.Model
+	if collab != nil {
+		collabV = collabview.New(collabPortBridge{p: collab})
+	} else {
+		collabV = collabview.New(nil)
+	}
+
+	var graphV graphview.Model
+	if graph != nil {
+		graphV = graphview.New(graph)
+	} else {
+		graphV = graphview.New(nil)
+	}
+
+	var pluginV pluginsview.Model
+	if plugin != nil {
+		pluginV = pluginsview.New(pluginPortBridge{p: plugin}, vaultPath)
+	} else {
+		pluginV = pluginsview.New(nil, vaultPath)
+	}
+
 	return Model{
-		vaultPath:   vaultPath,
-		library:     library,
-		session:     session,
-		reader:      reader,
-		plugin:      plugin,
-		collab:      collab,
-		status:      "ready",
-		hasActive:   false,
-		showPalette: false,
-		collabPanel: "presence",
+		vaultPath:  vaultPath,
+		session:    session,
+		plugin:     plugin,
+		collab:     collab,
+		libView:    libraryview.New(libraryPortBridge{p: library}),
+		readView:   readerview.New(readerPortBridge{p: reader}),
+		graphView:  graphV,
+		collabView: collabV,
+		pluginView: pluginV,
+		activeTab:  tabLibrary,
+		keys:       defaultKeys(),
+		help:       help.New(),
+		palette:    components.NewPalette(),
+		status:     "ready",
 	}
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(m.loadSourcesCmd(), m.loadActiveCmd(), m.loadCollabStatusCmd())
+	return tea.Batch(
+		m.libView.Init(),
+		m.graphView.Init(),
+		m.collabView.Init(),
+		m.loadActiveCmd(),
+	)
 }
 
+// ─── update ───────────────────────────────────────────────────────────────────
+
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var cmds []tea.Cmd
+
+	// The palette intercepts all input while open.
+	if m.palette.Visible() {
+		var cmd tea.Cmd
+		m.palette, cmd = m.palette.Update(msg)
+		return m, cmd
+	}
+
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		return m, nil
-	case sourcesLoadedMsg:
-		if msg.err != nil {
-			m.status = "source load failed: " + msg.err.Error()
-			return m, nil
-		}
-		m.sources = msg.sources
-		if len(m.sources) > 0 && m.selectedIndex >= len(m.sources) {
-			m.selectedIndex = len(m.sources) - 1
-		}
-		if len(m.sources) > 0 {
-			return m, m.loadSelectedDetailCmd()
-		}
-		return m, nil
+		m.palette.SetWidth(min(m.width-4, 80))
+		m.help.Width = m.width
+		m.propagateSize()
+
 	case activeLoadedMsg:
 		if msg.err != nil {
-			if msg.err == apperrors.ErrNoActiveSession {
-				m.hasActive = false
-				return m, nil
+			if msg.err != apperrors.ErrNoActiveSession {
+				m.status = "active session check: " + msg.err.Error()
 			}
-			m.status = "active session check failed: " + msg.err.Error()
-			return m, nil
+			m.hasActive = false
+		} else {
+			m.hasActive = true
+			m.activeSession = msg.active
+			m.status = "session recovered: " + msg.active.SourceTitle
+			m.pluginView.SetContext(msg.active.SourceID, msg.active.SessionID)
 		}
-		m.hasActive = true
-		m.activeSession = msg.active
-		m.status = "active session recovered: " + msg.active.SourceTitle
-		return m, nil
-	case detailLoadedMsg:
-		if msg.err != nil {
-			m.status = "source detail load failed: " + msg.err.Error()
-			return m, nil
-		}
-		m.detail = msg.detail
-		return m, nil
-	case readerOpenedMsg:
-		if msg.err != nil {
-			m.status = "reader open failed: " + msg.err.Error()
-			return m, nil
-		}
-		m.readerResult = msg.result
-		m.status = "reader opened: " + msg.result.Mode
-		if msg.result.ExternalLaunched {
-			m.status = "external source launched"
-		}
-		return m, nil
+
 	case sessionStartedMsg:
 		if msg.err != nil {
 			m.status = "session start failed: " + msg.err.Error()
-			return m, nil
+		} else {
+			m.hasActive = true
+			m.activeSession = msg.active
+			m.status = "session started: " + msg.active.SourceTitle
+			m.pluginView.SetContext(msg.active.SourceID, msg.active.SessionID)
 		}
-		m.activeSession = msg.active
-		m.hasActive = true
-		m.status = "session started"
-		return m, nil
+
 	case sessionEndedMsg:
 		if msg.err != nil {
 			m.status = "session end failed: " + msg.err.Error()
-			return m, nil
+		} else {
+			m.hasActive = false
+			m.activeSession = sessiondto.ActiveSessionOutput{}
+			m.status = fmt.Sprintf("session ended (+%.2f%%)", msg.out.DeltaProgress)
+			m.pluginView.SetContext("", "")
 		}
-		m.hasActive = false
-		m.activeSession = sessiondto.ActiveSessionOutput{}
-		m.status = fmt.Sprintf("session ended (+%.2f%%)", msg.out.DeltaProgress)
-		return m, tea.Batch(m.loadSourcesCmd(), m.loadSelectedDetailCmd())
-	case pluginCommandsMsg:
-		if msg.err != nil {
-			m.status = "plugin commands failed: " + msg.err.Error()
-			return m, nil
-		}
-		m.pluginNameForCommands = msg.pluginName
-		m.pluginCommands = msg.commands
-		m.status = fmt.Sprintf("plugin commands loaded: %d", len(msg.commands))
-		return m, nil
-	case pluginExecMsg:
-		if msg.err != nil {
-			m.status = "plugin execute failed: " + msg.err.Error()
-			return m, nil
-		}
-		m.pluginResult = msg.out
-		m.status = fmt.Sprintf("plugin %s:%s exit=%d", msg.out.PluginName, msg.out.CommandID, msg.out.ExitCode)
-		return m, nil
+
 	case pluginTTYReadyMsg:
 		if msg.err != nil {
-			m.status = "plugin tty prepare failed: " + msg.err.Error()
+			m.status = "plugin tty prepare: " + msg.err.Error()
 			return m, nil
 		}
 		if len(msg.plan.Argv) == 0 {
-			m.status = "plugin tty prepare failed: empty argv"
+			m.status = "plugin tty: empty argv"
 			return m, nil
 		}
 		cmd := osexec.Command(msg.plan.Argv[0], msg.plan.Argv[1:]...)
@@ -293,196 +306,202 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmd.Dir = msg.plan.Cwd
 		}
 		env := os.Environ()
-		for key, value := range msg.plan.Env {
-			env = append(env, key+"="+value)
+		for k, v := range msg.plan.Env {
+			env = append(env, k+"="+v)
 		}
-		if len(env) > 0 {
-			cmd.Env = env
-		}
+		cmd.Env = env
 		m.status = "plugin tty running"
 		return m, tea.ExecProcess(cmd, func(err error) tea.Msg {
 			return pluginTTYDoneMsg{err: err}
 		})
+
 	case pluginTTYDoneMsg:
 		if msg.err != nil {
-			m.status = "plugin tty exited with error: " + msg.err.Error()
-			return m, nil
+			m.status = "plugin tty error: " + msg.err.Error()
+		} else {
+			m.status = "plugin tty completed"
 		}
-		m.status = "plugin tty completed"
-		return m, nil
-	case collabStatusMsg:
-		if msg.err != nil {
-			m.status = "collab status failed: " + msg.err.Error()
-			return m, nil
+
+	case components.PaletteSubmitMsg:
+		return m.executePalette(msg.Input)
+
+	case components.PaletteCancelMsg:
+		m.status = "ready"
+
+	// OpenedMsg is produced by the reader view but bubbles up through the top
+	// level so we can auto-switch to the Reader tab and update status.
+	case readerview.OpenedMsg:
+		if msg.Err != nil {
+			m.status = "reader: " + msg.Err.Error()
+		} else {
+			m.status = fmt.Sprintf("reader: %s [%s]", msg.Result.Title, msg.Result.Mode)
+			m.activeTab = tabReader
+			// Keep plugin context up-to-date with the selected source.
+			if m.activeSession.SessionID == "" {
+				m.pluginView.SetContext(msg.Result.SourceID, "")
+			}
 		}
-		m.collabStatus = msg.status
-		return m, nil
-	case collabPeersMsg:
-		if msg.err != nil {
-			m.status = "collab peers failed: " + msg.err.Error()
-			return m, nil
-		}
-		m.collabPeers = msg.peers
-		m.status = fmt.Sprintf("collab peers loaded: %d", len(msg.peers))
-		return m, nil
-	case collabSyncMsg:
-		if msg.err != nil {
-			m.status = "collab sync failed: " + msg.err.Error()
-			return m, nil
-		}
-		m.status = fmt.Sprintf("collab synced ops=%d", msg.applied)
-		return m, m.loadCollabStatusCmd()
-	case collabActivityMsg:
-		if msg.err != nil {
-			m.status = "collab activity failed: " + msg.err.Error()
-			return m, nil
-		}
-		m.collabActivity = msg.events
-		m.status = fmt.Sprintf("collab activity loaded: %d", len(msg.events))
-		return m, nil
-	case collabConflictsMsg:
-		if msg.err != nil {
-			m.status = "collab conflicts failed: " + msg.err.Error()
-			return m, nil
-		}
-		m.collabConflicts = msg.items
-		m.status = fmt.Sprintf("collab conflicts loaded: %d", len(msg.items))
-		return m, nil
-	case collabResolveMsg:
-		if msg.err != nil {
-			m.status = "collab resolve failed: " + msg.err.Error()
-			return m, nil
-		}
-		m.status = fmt.Sprintf("collab conflict resolved: %s", msg.item.ID)
-		return m, tea.Batch(m.loadCollabConflictsCmd(), m.loadCollabStatusCmd())
-	case collabSyncHealthMsg:
-		if msg.err != nil {
-			m.status = "collab sync health failed: " + msg.err.Error()
-			return m, nil
-		}
-		m.status = fmt.Sprintf("collab sync health: %s (%s)", msg.health.State, msg.health.Reason)
-		return m, nil
+		var cmd tea.Cmd
+		m.readView, cmd = m.readView.Update(msg)
+		return m, cmd
+
 	case tea.KeyMsg:
-		if m.showPalette {
-			return m.handlePaletteInput(msg)
+		if m.showHelp {
+			if msg.String() == "?" || msg.String() == "esc" {
+				m.showHelp = false
+			}
+			return m, nil
 		}
-		return m.handleNormalInput(msg)
+
+		// Yield to sub-view when its search filter is active.
+		if m.subViewFiltering() {
+			break
+		}
+
+		switch msg.String() {
+		case "ctrl+c", "q":
+			return m, tea.Quit
+		case "tab":
+			m.activeTab = (m.activeTab + 1) % tabCount
+		case "shift+tab":
+			m.activeTab = (m.activeTab + tabCount - 1) % tabCount
+		case "?":
+			m.showHelp = !m.showHelp
+		case ":":
+			cmds = append(cmds, m.palette.Open())
+			return m, tea.Batch(cmds...)
+		case "s":
+			if m.activeTab == tabLibrary {
+				if id, ok := m.libView.SelectedSourceID(); ok {
+					cmds = append(cmds, m.startSessionCmd(id, m.libView.SelectedSourceTitle()))
+				}
+			}
+		case "enter":
+			if m.activeTab == tabLibrary {
+				if id, ok := m.libView.SelectedSourceID(); ok {
+					cmds = append(cmds, m.readView.OpenSource(id, "auto", 1, false))
+				}
+			}
+		case "left":
+			if m.activeTab == tabReader {
+				cmds = append(cmds, m.readView.PrevPage())
+			}
+		case "right":
+			if m.activeTab == tabReader {
+				cmds = append(cmds, m.readView.NextPage())
+			}
+		}
 	}
-	return m, nil
+
+	// Propagate the message to the active tab's sub-view.
+	var tabCmd tea.Cmd
+	switch m.activeTab {
+	case tabLibrary:
+		m.libView, tabCmd = m.libView.Update(msg)
+	case tabReader:
+		m.readView, tabCmd = m.readView.Update(msg)
+	case tabGraph:
+		m.graphView, tabCmd = m.graphView.Update(msg)
+	case tabCollab:
+		m.collabView, tabCmd = m.collabView.Update(msg)
+	case tabPlugins:
+		m.pluginView, tabCmd = m.pluginView.Update(msg)
+	}
+	cmds = append(cmds, tabCmd)
+
+	return m, tea.Batch(cmds...)
 }
+
+// ─── view ────────────────────────────────────────────────────────────────────
 
 func (m Model) View() string {
-	headline := theme.Title.Render("mdht") + " " + theme.Muted.Render("Public Beta")
-	sub := theme.Muted.Render(fmt.Sprintf("vault: %s", m.vaultPath))
+	tabBar := m.renderTabBar()
+	statusBar := m.renderStatusBar()
+	tabBarH := lipgloss.Height(tabBar)
+	statusBarH := lipgloss.Height(statusBar)
 
-	if m.hasActive {
-		headline += " " + theme.Hot.Render("[ACTIVE SESSION: "+m.activeSession.SourceTitle+"]")
+	contentH := m.height - tabBarH - statusBarH
+	if contentH < 1 {
+		contentH = 1
 	}
 
-	paneWidth := max(25, (m.width-8)/3)
-	paneHeight := max(10, m.height-9)
-	libraryPane := m.renderLibraryPane(paneWidth, paneHeight)
-	readerPane := m.renderReaderPane(paneWidth, paneHeight)
-	contextPane := m.renderContextPane(paneWidth, paneHeight)
-	row := lipgloss.JoinHorizontal(lipgloss.Top, libraryPane, readerPane, contextPane)
-
-	palette := ""
-	if m.showPalette {
-		palette = "\n" + theme.Pane.BorderForeground(theme.Peach).Render("Command Palette\n:"+m.paletteInput)
-	}
-
-	collabStatus := "offline"
-	if m.collabStatus.Online {
-		collabStatus = "online"
-	}
-	lastSync := "-"
-	if !m.collabStatus.LastSyncAt.IsZero() {
-		lastSync = time.Since(m.collabStatus.LastSyncAt).Round(time.Second).String()
-	}
-	footer := "\n" + theme.Hot.Render("status: "+m.status) + "\n" + theme.Muted.Render(fmt.Sprintf("collab:%s peers:%d approved_peers:%d pending_conflicts:%d pending_ops:%d nat:%s connectivity:%s last_sync:%s", collabStatus, m.collabStatus.PeerCount, m.collabStatus.ApprovedPeerCount, m.collabStatus.PendingConflicts, m.collabStatus.PendingOps, m.collabStatus.NATMode, m.collabStatus.Connectivity, lastSync)) + "\n" + theme.Muted.Render("keys: up/down select, enter open, s start session, : palette, q quit")
-	body := strings.Join([]string{headline, sub, row}, "\n") + palette + footer
-	return theme.App.Render(body)
-}
-
-func (m Model) handleNormalInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
-	case "ctrl+c", "q":
-		return m, tea.Quit
-	case "up":
-		if len(m.sources) > 0 {
-			m.selectedIndex = max(0, m.selectedIndex-1)
-			return m, m.loadSelectedDetailCmd()
-		}
-	case "down":
-		if len(m.sources) > 0 {
-			m.selectedIndex = min(len(m.sources)-1, m.selectedIndex+1)
-			return m, m.loadSelectedDetailCmd()
-		}
-	case ":":
-		m.showPalette = true
-		m.paletteInput = ""
-		return m, nil
-	case "enter", "o":
-		if selected, ok := m.selectedSourceID(); ok {
-			return m, m.openSourceCmd(selected, "auto", max(1, m.readerResult.Page), false)
-		}
-	case "s":
-		if selected, ok := m.selectedSourceID(); ok {
-			title := m.detail.Title
-			if title == "" && len(m.sources) > m.selectedIndex {
-				title = m.sources[m.selectedIndex].Title
-			}
-			return m, m.startSessionCmd(selected, title)
-		}
-	}
-	return m, nil
-}
-
-func (m Model) handlePaletteInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
-	case "esc":
-		m.showPalette = false
-		m.paletteInput = ""
-		return m, nil
-	case "enter":
-		input := strings.TrimSpace(m.paletteInput)
-		m.showPalette = false
-		m.paletteInput = ""
-		return m.executePalette(input)
-	case "backspace":
-		if len(m.paletteInput) > 0 {
-			m.paletteInput = m.paletteInput[:len(m.paletteInput)-1]
-		}
-		return m, nil
+	var content string
+	switch {
+	case m.showHelp:
+		content = lipgloss.NewStyle().Width(m.width).Height(contentH).
+			Render(m.help.View(m.keys))
+	case m.palette.Visible():
+		content = lipgloss.Place(m.width, contentH,
+			lipgloss.Center, lipgloss.Center, m.palette.View())
 	default:
-		if msg.Type == tea.KeyRunes {
-			m.paletteInput += msg.String()
-		}
-		return m, nil
+		content = m.activeView()
 	}
+
+	return lipgloss.JoinVertical(lipgloss.Left, tabBar, content, statusBar)
 }
+
+func (m Model) activeView() string {
+	switch m.activeTab {
+	case tabLibrary:
+		return m.libView.View()
+	case tabReader:
+		return m.readView.View()
+	case tabGraph:
+		return m.graphView.View()
+	case tabCollab:
+		return m.collabView.View()
+	case tabPlugins:
+		return m.pluginView.View()
+	}
+	return ""
+}
+
+func (m Model) renderTabBar() string {
+	parts := make([]string, tabCount)
+	for i := tabID(0); i < tabCount; i++ {
+		label := tabLabels[i]
+		if i == m.activeTab {
+			parts[i] = theme.Hot.Render(" " + label + " ")
+		} else {
+			parts[i] = theme.Muted.Render(" " + label + " ")
+		}
+	}
+	sep := theme.Muted.Render(" │ ")
+	bar := "mdht  " + strings.Join(parts, sep)
+	return lipgloss.NewStyle().Background(theme.Mantle).Width(m.width).Render(bar) + "\n"
+}
+
+func (m Model) renderStatusBar() string {
+	left := m.status
+	if m.hasActive {
+		left = theme.Hot.Render("● "+m.activeSession.SourceTitle) + "  " + left
+	}
+	right := theme.Muted.Render("?:help  tab:switch  :::palette  q:quit")
+	gap := m.width - lipgloss.Width(left) - lipgloss.Width(right)
+	if gap < 1 {
+		gap = 1
+	}
+	bar := left + strings.Repeat(" ", gap) + right
+	return "\n" + lipgloss.NewStyle().Background(theme.Mantle).Width(m.width).Render(bar)
+}
+
+// ─── palette execution ────────────────────────────────────────────────────────
 
 func (m Model) executePalette(input string) (tea.Model, tea.Cmd) {
-	if input == "" {
+	if strings.TrimSpace(input) == "" {
 		return m, nil
 	}
 	parts := strings.Fields(input)
-	if len(parts) == 0 {
-		return m, nil
-	}
-	selected, hasSelected := m.selectedSourceID()
+	selected, _ := m.libView.SelectedSourceID()
 
 	switch parts[0] {
 	case "session:start":
-		if !hasSelected {
+		if selected == "" {
 			m.status = "no source selected"
 			return m, nil
 		}
-		title := m.detail.Title
-		if title == "" {
-			title = m.sources[m.selectedIndex].Title
-		}
-		return m, m.startSessionCmd(selected, title)
+		return m, m.startSessionCmd(selected, m.libView.SelectedSourceTitle())
+
 	case "session:end":
 		if len(parts) < 3 {
 			m.status = "usage: session:end <delta> <outcome>"
@@ -493,10 +512,11 @@ func (m Model) executePalette(input string) (tea.Model, tea.Cmd) {
 			m.status = "invalid delta"
 			return m, nil
 		}
-		outcome := strings.TrimSpace(strings.TrimPrefix(input, parts[0]+" "+parts[1]))
+		outcome := strings.TrimSpace(strings.TrimPrefix(input, parts[0]+" "+parts[1]+" "))
 		return m, m.endSessionCmd(delta, outcome)
+
 	case "reader:open":
-		if !hasSelected {
+		if selected == "" {
 			m.status = "no source selected"
 			return m, nil
 		}
@@ -504,74 +524,45 @@ func (m Model) executePalette(input string) (tea.Model, tea.Cmd) {
 		if len(parts) >= 2 {
 			mode = parts[1]
 		}
-		page := max(1, m.readerResult.Page)
+		page := 1
 		if len(parts) >= 3 {
 			if p, err := strconv.Atoi(parts[2]); err == nil {
 				page = p
 			}
 		}
-		return m, m.openSourceCmd(selected, mode, page, false)
+		return m, m.readView.OpenSource(selected, mode, page, false)
+
 	case "reader:next-page":
-		if !hasSelected {
-			m.status = "no source selected"
-			return m, nil
-		}
-		page := max(1, m.readerResult.Page+1)
-		return m, m.openSourceCmd(selected, "pdf", page, false)
+		return m, m.readView.NextPage()
+
 	case "reader:prev-page":
-		if !hasSelected {
-			m.status = "no source selected"
-			return m, nil
-		}
-		page := max(1, m.readerResult.Page-1)
-		return m, m.openSourceCmd(selected, "pdf", page, false)
+		return m, m.readView.PrevPage()
+
 	case "source:open-external":
-		if !hasSelected {
+		if selected == "" {
 			m.status = "no source selected"
 			return m, nil
 		}
-		return m, m.openSourceCmd(selected, "auto", 1, true)
-	case "plugin:commands":
-		if len(parts) < 2 {
-			m.status = "usage: plugin:commands <plugin>"
-			return m, nil
-		}
-		return m, m.listPluginCommandsCmd(parts[1])
+		return m, m.readView.OpenSource(selected, "auto", 1, true)
+
 	case "plugin:exec":
 		if len(parts) < 3 {
-			m.status = "usage: plugin:exec <plugin> <command> [input-json]"
+			m.status = "usage: plugin:exec <plugin> <command> [json]"
 			return m, nil
 		}
 		prefix := parts[0] + " " + parts[1] + " " + parts[2]
 		inputJSON := strings.TrimSpace(strings.TrimPrefix(input, prefix))
-		return m, m.execPluginCmd(false, plugindto.ExecuteInput{
-			PluginName: parts[1],
-			CommandID:  parts[2],
-			InputJSON:  inputJSON,
-			SourceID:   selected,
-			SessionID:  m.activeSession.SessionID,
-			VaultPath:  m.vaultPath,
-			Cwd:        m.vaultPath,
-		})
-	case "plugin:analyze":
-		if len(parts) < 4 {
-			m.status = "usage: plugin:analyze <plugin> <command> <source-id> [input-json]"
-			return m, nil
-		}
-		prefix := parts[0] + " " + parts[1] + " " + parts[2] + " " + parts[3]
-		inputJSON := strings.TrimSpace(strings.TrimPrefix(input, prefix))
-		return m, m.execPluginCmd(true, plugindto.ExecuteInput{
-			PluginName: parts[1],
-			CommandID:  parts[2],
-			SourceID:   parts[3],
-			InputJSON:  inputJSON,
-			SessionID:  m.activeSession.SessionID,
-			VaultPath:  m.vaultPath,
-			Cwd:        m.vaultPath,
-		})
+		m.activeTab = tabPlugins
+		return m, m.pluginView.ExecCommand(parts[1], parts[2], inputJSON)
+
+	case "plugin:commands":
+		m.activeTab = tabPlugins
+		m.status = "switched to Plugins tab"
+		return m, nil
+
 	case "plugin:tty":
 		if len(parts) < 3 {
-			m.status = "usage: plugin:tty <plugin> <command> [input-json]"
+			m.status = "usage: plugin:tty <plugin> <command> [json]"
 			return m, nil
 		}
 		prefix := parts[0] + " " + parts[1] + " " + parts[2]
@@ -585,48 +576,55 @@ func (m Model) executePalette(input string) (tea.Model, tea.Cmd) {
 			VaultPath:  m.vaultPath,
 			Cwd:        m.vaultPath,
 		})
-	case "collab:status":
-		return m, m.loadCollabStatusCmd()
-	case "collab:peers":
-		m.collabPanel = "presence"
-		return m, m.loadCollabPeersCmd()
-	case "collab:activity":
-		m.collabPanel = "activity"
-		return m, m.loadCollabActivityCmd()
-	case "collab:conflicts":
-		m.collabPanel = "conflicts"
-		return m, m.loadCollabConflictsCmd()
+
+	case "collab:status", "collab:peers", "collab:activity",
+		"collab:conflicts", "collab:sync-now", "collab:sync-health":
+		m.activeTab = tabCollab
+		m.status = "switched to Collab tab"
+		return m, nil
+
 	case "collab:resolve":
 		if len(parts) < 3 {
-			m.status = "usage: collab:resolve <conflict-id> <local|remote|merge>"
+			m.status = "usage: collab:resolve <id> <local|remote|merge>"
 			return m, nil
 		}
-		return m, m.resolveCollabConflictCmd(parts[1], parts[2])
-	case "collab:sync-now":
-		return m, m.syncCollabCmd()
-	case "collab:sync-health":
-		return m, m.syncHealthCmd()
-	case "collab:net-status":
-		return m, m.loadCollabStatusCmd()
+		m.activeTab = tabCollab
+		return m, m.resolveConflictCmd(parts[1], parts[2])
+
 	default:
-		m.status = "unknown command"
-		return m, nil
+		m.status = "unknown command: " + parts[0]
 	}
+	return m, nil
 }
 
-func (m Model) selectedSourceID() (string, bool) {
-	if len(m.sources) == 0 || m.selectedIndex < 0 || m.selectedIndex >= len(m.sources) {
-		return "", false
+// ─── helpers ─────────────────────────────────────────────────────────────────
+
+// subViewFiltering reports whether the active tab's list filter is open,
+// in which case global key bindings must yield to allow free typing.
+func (m Model) subViewFiltering() bool {
+	switch m.activeTab {
+	case tabLibrary:
+		return m.libView.Filtering()
+	case tabGraph:
+		return m.graphView.Filtering()
+	case tabCollab:
+		return m.collabView.Filtering()
+	case tabPlugins:
+		return m.pluginView.Filtering()
 	}
-	return m.sources[m.selectedIndex].ID, true
+	return false
 }
 
-func (m Model) loadSourcesCmd() tea.Cmd {
-	return func() tea.Msg {
-		sources, err := m.library.ListSources(context.Background())
-		return sourcesLoadedMsg{sources: sources, err: err}
-	}
+func (m *Model) propagateSize() {
+	sz := tea.WindowSizeMsg{Width: m.width, Height: m.height - 3}
+	m.libView, _ = m.libView.Update(sz)
+	m.readView, _ = m.readView.Update(sz)
+	m.graphView, _ = m.graphView.Update(sz)
+	m.collabView, _ = m.collabView.Update(sz)
+	m.pluginView, _ = m.pluginView.Update(sz)
 }
+
+// ─── async commands ───────────────────────────────────────────────────────────
 
 func (m Model) loadActiveCmd() tea.Cmd {
 	return func() tea.Msg {
@@ -635,31 +633,18 @@ func (m Model) loadActiveCmd() tea.Cmd {
 	}
 }
 
-func (m Model) loadSelectedDetailCmd() tea.Cmd {
-	sourceID, ok := m.selectedSourceID()
-	if !ok {
-		return nil
-	}
+func (m Model) startSessionCmd(sourceID, title string) tea.Cmd {
 	return func() tea.Msg {
-		detail, err := m.library.GetSource(context.Background(), sourceID)
-		return detailLoadedMsg{detail: detail, err: err}
-	}
-}
-
-func (m Model) openSourceCmd(sourceID, mode string, page int, launchExternal bool) tea.Cmd {
-	return func() tea.Msg {
-		result, err := m.reader.OpenSource(context.Background(), sourceID, mode, page, launchExternal)
-		return readerOpenedMsg{result: result, err: err}
-	}
-}
-
-func (m Model) startSessionCmd(sourceID, sourceTitle string) tea.Cmd {
-	return func() tea.Msg {
-		out, err := m.session.Start(context.Background(), sourceID, sourceTitle, "")
+		out, err := m.session.Start(context.Background(), sourceID, title, "")
 		if err != nil {
 			return sessionStartedMsg{err: err}
 		}
-		return sessionStartedMsg{active: sessiondto.ActiveSessionOutput{SessionID: out.SessionID, SourceID: out.SourceID, SourceTitle: sourceTitle, StartedAt: out.StartedAt}}
+		return sessionStartedMsg{active: sessiondto.ActiveSessionOutput{
+			SessionID:   out.SessionID,
+			SourceID:    out.SourceID,
+			SourceTitle: title,
+			StartedAt:   out.StartedAt,
+		}}
 	}
 }
 
@@ -670,240 +655,82 @@ func (m Model) endSessionCmd(delta float64, outcome string) tea.Cmd {
 	}
 }
 
-func (m Model) listPluginCommandsCmd(pluginName string) tea.Cmd {
-	return func() tea.Msg {
-		if m.plugin == nil {
-			return pluginCommandsMsg{err: fmt.Errorf("plugin adapter is not configured")}
-		}
-		commands, err := m.plugin.ListCommands(context.Background(), pluginName)
-		return pluginCommandsMsg{pluginName: pluginName, commands: commands, err: err}
-	}
-}
-
-func (m Model) execPluginCmd(analyze bool, input plugindto.ExecuteInput) tea.Cmd {
-	return func() tea.Msg {
-		if m.plugin == nil {
-			return pluginExecMsg{err: fmt.Errorf("plugin adapter is not configured")}
-		}
-		var (
-			out plugindto.ExecuteOutput
-			err error
-		)
-		if analyze {
-			out, err = m.plugin.Analyze(context.Background(), input)
-		} else {
-			out, err = m.plugin.Execute(context.Background(), input)
-		}
-		return pluginExecMsg{out: out, err: err}
-	}
-}
-
 func (m Model) preparePluginTTYCmd(input plugindto.TTYPrepareInput) tea.Cmd {
 	return func() tea.Msg {
 		if m.plugin == nil {
-			return pluginTTYReadyMsg{err: fmt.Errorf("plugin adapter is not configured")}
+			return pluginTTYReadyMsg{err: fmt.Errorf("plugin adapter not configured")}
 		}
 		plan, err := m.plugin.PrepareTTY(context.Background(), input)
 		return pluginTTYReadyMsg{plan: plan, err: err}
 	}
 }
 
-func (m Model) loadCollabStatusCmd() tea.Cmd {
+func (m Model) resolveConflictCmd(conflictID, strategy string) tea.Cmd {
 	return func() tea.Msg {
 		if m.collab == nil {
-			return collabStatusMsg{}
-		}
-		status, err := m.collab.Status(context.Background())
-		return collabStatusMsg{status: status, err: err}
-	}
-}
-
-func (m Model) loadCollabPeersCmd() tea.Cmd {
-	return func() tea.Msg {
-		if m.collab == nil {
-			return collabPeersMsg{}
-		}
-		peers, err := m.collab.PeerList(context.Background())
-		return collabPeersMsg{peers: peers, err: err}
-	}
-}
-
-func (m Model) syncCollabCmd() tea.Cmd {
-	return func() tea.Msg {
-		if m.collab == nil {
-			return collabSyncMsg{}
-		}
-		out, err := m.collab.SyncNow(context.Background())
-		return collabSyncMsg{applied: out.Applied, err: err}
-	}
-}
-
-func (m Model) syncHealthCmd() tea.Cmd {
-	return func() tea.Msg {
-		if m.collab == nil {
-			return collabSyncHealthMsg{}
-		}
-		health, err := m.collab.SyncHealth(context.Background())
-		return collabSyncHealthMsg{health: health, err: err}
-	}
-}
-
-func (m Model) loadCollabActivityCmd() tea.Cmd {
-	return func() tea.Msg {
-		if m.collab == nil {
-			return collabActivityMsg{}
-		}
-		events, err := m.collab.ActivityTail(context.Background(), time.Time{}, 100)
-		return collabActivityMsg{events: events, err: err}
-	}
-}
-
-func (m Model) loadCollabConflictsCmd() tea.Cmd {
-	return func() tea.Msg {
-		if m.collab == nil {
-			return collabConflictsMsg{}
-		}
-		items, err := m.collab.ConflictsList(context.Background(), "")
-		return collabConflictsMsg{items: items, err: err}
-	}
-}
-
-func (m Model) resolveCollabConflictCmd(conflictID, strategy string) tea.Cmd {
-	return func() tea.Msg {
-		if m.collab == nil {
-			return collabResolveMsg{}
+			return collabview.ResolveMsg{}
 		}
 		item, err := m.collab.ConflictResolve(context.Background(), conflictID, strategy)
-		return collabResolveMsg{item: item, err: err}
+		return collabview.ResolveMsg{Item: item, Err: err}
 	}
 }
 
-func (m Model) renderLibraryPane(width, height int) string {
-	lines := []string{theme.Title.Render("Library")}
-	if len(m.sources) == 0 {
-		lines = append(lines, theme.Muted.Render("No sources yet"))
-	} else {
-		for i, source := range m.sources {
-			prefix := "  "
-			if i == m.selectedIndex {
-				prefix = "> "
-			}
-			line := fmt.Sprintf("%s%s [%s] %.1f%%", prefix, source.Title, source.Type, source.Percent)
-			lines = append(lines, line)
-		}
-	}
-	return theme.PaneActive.Width(width).Height(height).Render(strings.Join(lines, "\n"))
+// ─── port bridges ─────────────────────────────────────────────────────────────
+// Each bridge narrows a broad port interface to the minimal interface needed by
+// a specific sub-view, keeping view packages free of knowledge about the wider
+// port surface.
+
+type libraryPortBridge struct{ p libraryPort }
+
+func (b libraryPortBridge) ListSources(ctx context.Context) ([]dto.SourceOutput, error) {
+	return b.p.ListSources(ctx)
+}
+func (b libraryPortBridge) GetSource(ctx context.Context, id string) (dto.SourceDetailOutput, error) {
+	return b.p.GetSource(ctx, id)
 }
 
-func (m Model) renderReaderPane(width, height int) string {
-	lines := []string{theme.Title.Render("Reader")}
-	if m.readerResult.SourceID == "" {
-		lines = append(lines, theme.Muted.Render("Open a source to render content"))
-	} else {
-		lines = append(lines,
-			fmt.Sprintf("%s [%s] mode=%s", m.readerResult.Title, m.readerResult.Type, m.readerResult.Mode),
-			fmt.Sprintf("progress: %.1f%%", m.readerResult.Percent),
-		)
-		if m.readerResult.Mode == "pdf" {
-			lines = append(lines, fmt.Sprintf("page %d/%d", m.readerResult.Page, m.readerResult.TotalPage))
-		}
-		if m.readerResult.ExternalTarget != "" {
-			lines = append(lines, "target: "+m.readerResult.ExternalTarget)
-		}
-		lines = append(lines, "", trimText(m.readerResult.Content, 320))
-	}
-	if m.pluginResult.PluginName != "" {
-		lines = append(lines,
-			"",
-			theme.Title.Render("Plugin Output"),
-			fmt.Sprintf("%s:%s exit=%d", m.pluginResult.PluginName, m.pluginResult.CommandID, m.pluginResult.ExitCode),
-		)
-		if m.pluginResult.Stdout != "" {
-			lines = append(lines, trimText(m.pluginResult.Stdout, 220))
-		}
-		if m.pluginResult.OutputJSON != "" {
-			lines = append(lines, trimText(m.pluginResult.OutputJSON, 220))
-		}
-	}
-	return theme.Pane.Width(width).Height(height).Render(strings.Join(lines, "\n"))
+type readerPortBridge struct{ p readerPort }
+
+func (b readerPortBridge) OpenSource(ctx context.Context, id, mode string, page int, ext bool) (readerdto.OpenResult, error) {
+	return b.p.OpenSource(ctx, id, mode, page, ext)
 }
 
-func (m Model) renderContextPane(width, height int) string {
-	lines := []string{theme.Title.Render("Context")}
-	if m.detail.ID == "" {
-		lines = append(lines, theme.Muted.Render("Select a source"))
-	} else {
-		lines = append(lines,
-			"id: "+m.detail.ID,
-			"note: "+m.detail.NotePath,
-		)
-		if m.detail.FilePath != "" {
-			lines = append(lines, "file: "+m.detail.FilePath)
-		}
-		if m.detail.URL != "" {
-			lines = append(lines, "url: "+m.detail.URL)
-		}
-		if len(m.detail.Topics) > 0 {
-			lines = append(lines, "topics: "+strings.Join(m.detail.Topics, ", "))
-		}
-	}
-	if m.hasActive {
-		lines = append(lines,
-			"",
-			theme.Hot.Render("Active Session"),
-			"session: "+m.activeSession.SessionID,
-			"source: "+m.activeSession.SourceTitle,
-		)
-	}
-	if m.pluginNameForCommands != "" {
-		lines = append(lines, "", theme.Title.Render("Plugin Commands: "+m.pluginNameForCommands))
-		if len(m.pluginCommands) == 0 {
-			lines = append(lines, theme.Muted.Render("No commands discovered"))
-		}
-		for _, item := range m.pluginCommands {
-			lines = append(lines, fmt.Sprintf("- %s (%s)", item.ID, item.Kind))
-		}
-	}
-	panelLabel := m.collabPanel
-	if panelLabel != "" {
-		panelLabel = strings.ToUpper(panelLabel[:1]) + panelLabel[1:]
-	}
-	lines = append(lines, "", theme.Title.Render("Collab Panel: "+panelLabel))
-	switch m.collabPanel {
-	case "activity":
-		if len(m.collabActivity) == 0 {
-			lines = append(lines, theme.Muted.Render("No activity loaded"))
-		}
-		for i, item := range m.collabActivity {
-			if i >= 8 {
-				break
-			}
-			lines = append(lines, fmt.Sprintf("- %s %s", item.Type, item.Message))
-		}
-	case "conflicts":
-		if len(m.collabConflicts) == 0 {
-			lines = append(lines, theme.Muted.Render("No conflicts loaded"))
-		}
-		for i, item := range m.collabConflicts {
-			if i >= 8 {
-				break
-			}
-			lines = append(lines, fmt.Sprintf("- %s [%s] %s/%s", item.ID, item.Status, item.EntityKey, item.Field))
-		}
-	default:
-		if len(m.collabPeers) == 0 {
-			lines = append(lines, theme.Muted.Render("No peers loaded"))
-		}
-		for _, item := range m.collabPeers {
-			lines = append(lines, fmt.Sprintf("- %s (%s) reachability=%s dial=%s traversal=%s rtt=%dms", item.PeerID, item.State, item.Reachability, item.LastDialResult, item.TraversalMode, item.RTTMS))
-		}
-	}
-	return theme.Pane.Width(width).Height(height).Render(strings.Join(lines, "\n"))
+type collabPortBridge struct{ p collabPort }
+
+func (b collabPortBridge) Status(ctx context.Context) (collabdto.StatusOutput, error) {
+	return b.p.Status(ctx)
+}
+func (b collabPortBridge) PeerList(ctx context.Context) ([]collabdto.PeerOutput, error) {
+	return b.p.PeerList(ctx)
+}
+func (b collabPortBridge) ActivityTail(ctx context.Context, since time.Time, limit int) ([]collabdto.ActivityOutput, error) {
+	return b.p.ActivityTail(ctx, since, limit)
+}
+func (b collabPortBridge) ConflictsList(ctx context.Context, key string) ([]collabdto.ConflictOutput, error) {
+	return b.p.ConflictsList(ctx, key)
+}
+func (b collabPortBridge) ConflictResolve(ctx context.Context, id, strategy string) (collabdto.ConflictOutput, error) {
+	return b.p.ConflictResolve(ctx, id, strategy)
+}
+func (b collabPortBridge) SyncNow(ctx context.Context) (collabdto.ReconcileOutput, error) {
+	return b.p.SyncNow(ctx)
+}
+func (b collabPortBridge) SyncHealth(ctx context.Context) (collabdto.SyncHealthOutput, error) {
+	return b.p.SyncHealth(ctx)
 }
 
-func trimText(content string, maxLen int) string {
-	if len(content) <= maxLen {
-		return content
+type pluginPortBridge struct{ p pluginPort }
+
+func (b pluginPortBridge) ListCommands(ctx context.Context, name string) ([]plugindto.CommandInfo, error) {
+	return b.p.ListCommands(ctx, name)
+}
+func (b pluginPortBridge) Execute(ctx context.Context, input plugindto.ExecuteInput) (plugindto.ExecuteOutput, error) {
+	return b.p.Execute(ctx, input)
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
 	}
-	return content[:maxLen] + "..."
+	return b
 }

@@ -32,7 +32,10 @@ func newRootCmd() *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
-	root.PersistentFlags().StringVar(&vaultPath, "vault", ".", "Obsidian vault path")
+	root.PersistentFlags().StringVar(&vaultPath, "vault", ".", "Obsidian vault path ($MDHT_VAULT)")
+	if v := os.Getenv("MDHT_VAULT"); v != "" && vaultPath == "." {
+		vaultPath = v
+	}
 
 	root.AddCommand(newTUICmd(&vaultPath))
 	root.AddCommand(newIngestCmd(&vaultPath))
